@@ -89,10 +89,14 @@ export function PostComposer({ pages }: PostComposerProps) {
   const [isSuccess, setIsSuccess] = useState(false);
   const [isPending, startTransition] = useTransition();
 
+  // "__none__" is the sentinel for "use Chrome Extension (no page token)"
+  // Radix Select requires non-empty string values, so we can't use "".
+  const EXTENSION_SENTINEL = "__none__";
+
   const form = useForm<PostFormValues>({
     resolver: zodResolver(postSchema),
     defaultValues: {
-      facebookTokenId: safePages[0]?.id ?? "",
+      facebookTokenId: EXTENSION_SENTINEL, // always default to extension mode
       targetId: "",
       content: "",
       imageUrl: "",
@@ -103,7 +107,11 @@ export function PostComposer({ pages }: PostComposerProps) {
   });
 
   const publishMode = form.watch("publishMode");
+  const watchedTokenId = form.watch("facebookTokenId");
   const contentLength = form.watch("content")?.length ?? 0;
+
+  // Extension mode = no pages connected, OR user explicitly selected "personal profile"
+  const useExtension = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
 
   // Min datetime: now + 5 minutes
   const minDateTime = new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16);
@@ -111,8 +119,13 @@ export function PostComposer({ pages }: PostComposerProps) {
   function onSubmit(values: PostFormValues) {
     setServerError(null);
     startTransition(async () => {
+      const resolvedTokenId =
+        values.facebookTokenId === EXTENSION_SENTINEL
+          ? undefined
+          : values.facebookTokenId?.trim() || undefined;
+
       const result = await createPostAction({
-        facebookTokenId: values.facebookTokenId?.trim() || undefined,
+        facebookTokenId: resolvedTokenId,
         targetId: values.targetId?.trim() || undefined,
         content: values.content,
         imageUrl: values.imageUrl || undefined,
@@ -126,7 +139,7 @@ export function PostComposer({ pages }: PostComposerProps) {
       } else {
         setIsSuccess(true);
         form.reset({
-          facebookTokenId: values.facebookTokenId ?? "",
+          facebookTokenId: values.facebookTokenId ?? EXTENSION_SENTINEL,
           targetId: values.targetId ?? "",
           publishMode: "now",
         });
@@ -145,13 +158,14 @@ export function PostComposer({ pages }: PostComposerProps) {
       </CardHeader>
 
       <CardContent>
-        {/* Extension-mode notice when no pages are connected */}
-        {safePages.length === 0 && (
+        {/* Extension-mode notice — shown when no page is selected */}
+        {useExtension && (
           <div className="mb-5 flex items-start gap-2.5 rounded-md bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800">
             <Puzzle className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
-              לא חוברו דפי פייסבוק. הפוסט יישמר במסד הנתונים ויפורסם
-              על ידי <strong>תוסף Chrome</strong> — ודא שהוזן מזהה יעד (קבוצה).
+              הפוסט יישמר במסד הנתונים ויפורסם על ידי{" "}
+              <strong>תוסף Chrome</strong> באמצעות הפרופיל האישי שלך —
+              ודא שהוזן מזהה יעד (קבוצה) ושהתוסף פעיל.
             </span>
           </div>
         )}
@@ -181,30 +195,36 @@ export function PostComposer({ pages }: PostComposerProps) {
             {/* ── Row: Page selector (optional) + Target ID ────────────── */}
             <div className="grid gap-4 sm:grid-cols-2">
 
-              {/* Page selector — only shown when pages are connected */}
+              {/* Page selector — always shown when pages are connected */}
               {safePages.length > 0 && (
                 <FormField
                   control={form.control}
                   name="facebookTokenId"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>דף פייסבוק (מקור האסימון)</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormLabel>ערוץ פרסום</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
                         <FormControl>
                           <SelectTrigger>
-                            <SelectValue placeholder="בחר דף (אופציונלי)..." />
+                            <SelectValue />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
+                          {/* Default: extension mode — always first */}
+                          <SelectItem value={EXTENSION_SENTINEL}>
+                            🧩 פרופיל אישי (באמצעות התוסף)
+                          </SelectItem>
                           {safePages.map((page) => (
                             <SelectItem key={page.id} value={page.id}>
-                              {page.page_name ?? `דף ${page.page_id}`}
+                              📄 {page.page_name ?? `דף ${page.page_id}`}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                       <FormDescription className="text-xs">
-                        השאר ריק לפרסום דרך תוסף Chrome בלבד
+                        {useExtension
+                          ? "הפוסט יפורסם דרך תוסף Chrome עם הפרופיל האישי"
+                          : "הפוסט יפורסם דרך Graph API עם אסימון הדף"}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
