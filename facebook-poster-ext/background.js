@@ -93,8 +93,9 @@ async function checkAndPost() {
     return;
   }
 
-  // Extra settling time — Facebook's SPA needs a moment after 'complete'
-  await sleep(3000);
+  // Extra settling time — Facebook's SPA needs a moment after 'complete'.
+  // Background tabs render slower, so we give it more time.
+  await sleep(5000);
 
   // 5. Inject the posting function into the page
   let execResult;
@@ -167,83 +168,136 @@ async function markPost(apiBaseUrl, extensionSecret, postId, status, error) {
 // ─────────────────────────────────────────────────────────────────────────────
 // postToFacebookGroup — runs INSIDE the Facebook page (page context)
 //
-// ⚠️  FRAGILE SELECTORS — Facebook can change these without notice.
-//     If posting stops working, open DevTools on a Facebook group page,
-//     inspect the composer area, and update the selectors below.
+// ⚠️  TWO-PHASE FLOW (verified against Hebrew Facebook DOM, March 2025):
 //
-//     Current targets (as of early 2025):
-//       • Composer: div[role="textbox"][contenteditable="true"]
-//         Also tried: div[data-lexical-editor="true"]
-//       • Post button: div[aria-label="Post"] | div[aria-label="פרסם"]
-//         Fallback: any div[role="button"] whose trimmed textContent === "Post" | "פרסם"
+//   Phase 1 — Click the trigger
+//     The "כאן כותבים..." area is a div[role="button"]. The actual Lexical
+//     editor (contenteditable) does NOT exist in the DOM until after you click
+//     this trigger. Clicking it opens a modal/dialog containing the editor.
 //
-//     Text insertion uses document.execCommand('insertText') — deprecated
-//     but still functional in Chrome as of 2025. If it stops working,
-//     the DataTransfer clipboard-paste fallback kicks in.
+//   Phase 2 — Find the editor inside the dialog
+//     After the modal opens, look for div[role="textbox"][contenteditable="true"]
+//     preferably scoped to div[role="dialog"] so we don't hit stale elements.
+//
+//   Phase 3 — Insert text via execCommand('insertText')
+//     Deprecated but still working in Chrome as of early 2025.
+//     DataTransfer clipboard-paste is used as a fallback.
+//
+//   Phase 4 — Click "פרסם" (Hebrew Post button)
+//     Searched first inside the dialog, then globally.
+//
+// ⚠️  SELECTOR UPDATE GUIDE:
+//     Open DevTools on the group page → Elements panel → inspect the
+//     "כאן כותבים..." area. Update TRIGGER_TEXTS if the placeholder changes.
+//     Inspect the modal's submit button for the correct aria-label.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function postToFacebookGroup(content, imageUrl, linkUrl) {
-  /* ── internal helpers (no closures — this runs in page context) ── */
+  /* helpers — must be defined inline; this runs in page context with no closure */
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
+  function isVisible(el) {
+    return !!(el && el.offsetParent !== null && el.getBoundingClientRect().height > 0);
+  }
+
+  /* ── Step 0: build full content string ── */
+  const fullContent = linkUrl ? `${content}\n${linkUrl}` : content;
+
+  /* ── Step 1: click the "כאן כותבים..." trigger to open the Lexical editor ──
+   *
+   * The trigger is a div[role="button"] containing the placeholder text.
+   * Try aria-label first, then fall back to a text-content scan.
+   * The contenteditable will NOT exist before this click.
+   */
+  const TRIGGER_TEXTS = ["כאן כותבים...", "Write something...", "כתוב משהו...", "מה אתה חושב?"];
+
+  let triggerClicked = false;
+
+  // Try aria-label / aria-placeholder on any element
+  for (const text of TRIGGER_TEXTS) {
+    const el =
+      document.querySelector(`[aria-label="${text}"]`) ||
+      document.querySelector(`[aria-placeholder="${text}"]`);
+    if (el) {
+      el.click();
+      triggerClicked = true;
+      break;
+    }
+  }
+
+  // Fallback: scan all role="button" elements for matching inner text
+  if (!triggerClicked) {
+    for (const el of document.querySelectorAll('div[role="button"]')) {
+      const text = el.textContent?.trim() ?? "";
+      if (TRIGGER_TEXTS.some((t) => text.startsWith(t.replace("...", "")))) {
+        el.click();
+        triggerClicked = true;
+        break;
+      }
+    }
+  }
+
+  if (!triggerClicked) {
+    return {
+      success: false,
+      error: 'לא נמצא כפתור "כאן כותבים..." — ייתכן שפייסבוק שינתה את ה-DOM. פתח DevTools ובדוק את האלמנט.',
+    };
+  }
+
+  // Wait for the modal / expanded composer to finish rendering
+  await sleep(2500);
+
+  /* ── Step 2: find the Lexical contenteditable inside the dialog ──
+   *
+   * Prefer elements scoped to div[role="dialog"] because clicking the trigger
+   * usually opens a modal. Fall back to a global search if no dialog is found.
+   */
   function findComposer() {
-    const selectors = [
+    const scopeSelectors = [
+      // Scoped to dialog (modal) — preferred
+      'div[role="dialog"] div[role="textbox"][contenteditable="true"]',
+      'div[role="dialog"] div[data-lexical-editor="true"]',
+      'div[role="dialog"] div[contenteditable="true"][spellcheck="true"]',
+      'div[role="dialog"] div[contenteditable="true"]',
+      // Global fallback
       'div[role="textbox"][contenteditable="true"]',
       'div[data-lexical-editor="true"]',
       'div[contenteditable="true"][spellcheck="true"]',
     ];
-    for (const sel of selectors) {
+    for (const sel of scopeSelectors) {
       const el = document.querySelector(sel);
-      if (el) return el;
+      if (el && isVisible(el)) return el;
     }
     return null;
   }
 
-  function findPostButton() {
-    // Strategy 1: exact aria-label (English or Hebrew)
-    for (const label of ["Post", "פרסם", "Share", "שתף"]) {
-      const el =
-        document.querySelector(`div[aria-label="${label}"][role="button"]`) ||
-        document.querySelector(`button[aria-label="${label}"]`);
-      if (el) return el;
-    }
-    // Strategy 2: scan all role=button by text content
-    for (const el of document.querySelectorAll('div[role="button"], button')) {
-      const text = el.textContent?.trim();
-      if (text === "Post" || text === "פרסם" || text === "Share" || text === "שתף") {
-        return el;
-      }
-    }
-    return null;
-  }
-
-  /* ── Step 0: build the full text to post ── */
-  const fullContent = linkUrl ? `${content}\n${linkUrl}` : content;
-
-  /* ── Step 1: find composer — retry up to 12 s ── */
   let composer = null;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 15; i++) {
     composer = findComposer();
     if (composer) break;
     await sleep(1000);
   }
+
   if (!composer) {
-    return { success: false, error: "Could not find post composer after 12 seconds. Facebook DOM may have changed." };
+    return {
+      success: false,
+      error: `לא נמצאה תיבת הכתיבה אחרי לחיצה על הטריגר (15 שניות). פתח DevTools ובדוק מה קורה לאחר לחיצה על "כאן כותבים...". triggerClicked=${triggerClicked}`,
+    };
   }
 
-  /* ── Step 2: focus and inject text ── */
+  /* ── Step 3: focus the editor and inject text ── */
   composer.click();
-  await sleep(600);
+  await sleep(500);
   composer.focus();
   await sleep(300);
 
-  // Primary: execCommand (deprecated but works in Chrome 2025)
+  // execCommand is deprecated but still works in Chrome (as of early 2025)
   const inserted = document.execCommand("insertText", false, fullContent);
 
   if (!inserted) {
-    // Fallback: DataTransfer clipboard-paste simulation
+    // Clipboard-paste fallback for Lexical
     const dt = new DataTransfer();
     dt.setData("text/plain", fullContent);
     composer.dispatchEvent(
@@ -251,29 +305,73 @@ async function postToFacebookGroup(content, imageUrl, linkUrl) {
     );
   }
 
-  // Wait for React / Lexical to process the input event
-  await sleep(1500);
+  // Give Lexical time to process the synthetic input
+  await sleep(2000);
 
-  // Verify text was actually inserted
-  if (!composer.textContent?.includes(content.slice(0, 20))) {
-    return { success: false, error: "Text injection failed — composer appears empty after insert." };
+  // Verify something was actually inserted
+  const composerText = composer.textContent ?? "";
+  const snippet = content.slice(0, 15);
+  if (snippet.length > 0 && !composerText.includes(snippet)) {
+    return {
+      success: false,
+      error: "הטקסט לא הוכנס לתיבת הכתיבה. Lexical דחה את הפקודה — ייתכן שנדרשת שיטת הזרקה אחרת.",
+    };
   }
 
-  /* ── Step 3: find and click the Post button ── */
+  /* ── Step 4: find and click the "פרסם" (Post) button ──
+   *
+   * Search inside the dialog first to avoid false positives elsewhere on the page.
+   */
+  function findPostButton() {
+    const POST_LABELS = ["פרסם", "Post", "שתף", "Share"];
+
+    // Inside dialog first
+    const dialog = document.querySelector('div[role="dialog"]');
+    if (dialog) {
+      for (const el of dialog.querySelectorAll('div[role="button"], button')) {
+        const label = (el.getAttribute("aria-label") ?? "").trim();
+        const text = (el.textContent ?? "").trim();
+        if (POST_LABELS.includes(label) || POST_LABELS.includes(text)) {
+          if (isVisible(el)) return el;
+        }
+      }
+    }
+
+    // Global aria-label search
+    for (const label of POST_LABELS) {
+      const el =
+        document.querySelector(`div[aria-label="${label}"][role="button"]`) ||
+        document.querySelector(`button[aria-label="${label}"]`);
+      if (el && isVisible(el)) return el;
+    }
+
+    // Global text-content scan
+    for (const el of document.querySelectorAll('div[role="button"], button')) {
+      const text = (el.textContent ?? "").trim();
+      if (POST_LABELS.includes(text) && isVisible(el)) return el;
+    }
+
+    return null;
+  }
+
   let postBtn = null;
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 8; i++) {
     postBtn = findPostButton();
     if (postBtn) break;
     await sleep(800);
   }
+
   if (!postBtn) {
-    return { success: false, error: "Could not find Post button. Facebook DOM may have changed." };
+    return {
+      success: false,
+      error: 'לא נמצא כפתור "פרסם" / "Post". ייתכן שהטקסט לא הוכנס, או שפייסבוק שינתה את ה-DOM.',
+    };
   }
 
   postBtn.click();
 
-  // Wait for submission (network + animation)
-  await sleep(4000);
+  // Wait for the post to be submitted and the page to settle
+  await sleep(5000);
 
   return { success: true };
 }
