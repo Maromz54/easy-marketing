@@ -227,7 +227,7 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       }
     }
 
-    // S1b: partial aria-label (language-agnostic)
+    // S1b: partial aria-label (language-agnostic, role="button" or button)
     for (const el of root.querySelectorAll('[role="button"][aria-label], button[aria-label]')) {
       const lbl = (el.getAttribute("aria-label") ?? "").toLowerCase();
       if (POST_LABELS.some((p) => lbl.includes(p.toLowerCase()))) {
@@ -238,12 +238,24 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       }
     }
 
-    // S2: text content (case-insensitive)
-    for (const el of root.querySelectorAll('[role="button"], button')) {
-      const text = (el.textContent ?? "").trim().toLowerCase();
-      if (POST_LABELS.map((l) => l.toLowerCase()).includes(text)) {
+    // S1c: any element with matching aria-label (no role requirement — catches div[aria-label="פרסום"])
+    for (const label of POST_LABELS) {
+      const el = root.querySelector(`[aria-label="${label}"]`);
+      if (el) {
         const dis = el.getAttribute("aria-disabled");
-        log(`S2 text="${text}" disabled="${dis}"`);
+        log(`S1c any-element aria-label="${label}" tag=${el.tagName} disabled="${dis}"`);
+        if (dis === "true") warn("Button found but DISABLED.");
+        return el;
+      }
+    }
+
+    // S2: innerText / textContent (case-insensitive, also checks divs without role="button")
+    const s2Labels = POST_LABELS.map((l) => l.toLowerCase());
+    for (const el of root.querySelectorAll('[role="button"], button, div[aria-label], div[tabindex]')) {
+      const text = (el.innerText ?? el.textContent ?? "").trim().toLowerCase();
+      if (s2Labels.some((l) => text === l || text === l + "\n" || text.split("\n")[0].trim() === l)) {
+        const dis = el.getAttribute("aria-disabled");
+        log(`S2 innerText="${text.slice(0, 20)}" tag=${el.tagName} disabled="${dis}"`);
         if (dis === "true") warn("Button found but DISABLED.");
         return el;
       }
@@ -319,12 +331,32 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
 
   const dis = postBtn.getAttribute("aria-disabled");
   log(`Clicking: label="${postBtn.getAttribute("aria-label")}" text="${(postBtn.textContent ?? "").trim().slice(0, 20)}" disabled="${dis}"`);
-  postBtn.click();
+
+  // Scroll the button into view so it has a real bounding box
+  postBtn.scrollIntoView({ block: "center", behavior: "instant" });
+  await sleep(200);
+
+  // Human-like click: full pointer event sequence
+  function humanClick(el) {
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width  / 2;
+    const cy = rect.top  + rect.height / 2;
+    const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
+    el.dispatchEvent(new MouseEvent("mouseover",  opts));
+    el.dispatchEvent(new MouseEvent("mouseenter", { ...opts, bubbles: false }));
+    el.dispatchEvent(new MouseEvent("mousemove",  opts));
+    el.dispatchEvent(new MouseEvent("mousedown",  opts));
+    el.dispatchEvent(new MouseEvent("mouseup",    opts));
+    el.dispatchEvent(new MouseEvent("click",      opts));
+    log("humanClick dispatched on:", el.tagName, `label="${el.getAttribute("aria-label")}"`);
+  }
+
+  humanClick(postBtn);
 
   if (dis === "true") {
     await sleep(1500);
-    log("Was disabled — retrying click after 1.5 s...");
-    postBtn.click();
+    log("Was disabled — retrying humanClick after 1.5 s...");
+    humanClick(postBtn);
   }
 
   await sleep(5000);

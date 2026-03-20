@@ -131,14 +131,15 @@ async function checkAndPost() {
   }
 
   const scriptResult = execResult?.[0]?.result;
-  chrome.tabs.remove(tab.id).catch(() => {});
 
   if (scriptResult?.success) {
     console.log("[EasyMarketing] Post published successfully:", post.id);
+    chrome.tabs.remove(tab.id).catch(() => {});
     await markPost(apiBaseUrl, extensionSecret, post.id, "published");
   } else {
     const errMsg = scriptResult?.error ?? "Unknown error in content script";
-    console.error("[EasyMarketing] Posting failed:", errMsg);
+    console.error("[EasyMarketing] Posting failed — tab left open for inspection:", errMsg);
+    // Tab intentionally NOT closed so the user can inspect the DOM.
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed", errMsg);
   }
 }
