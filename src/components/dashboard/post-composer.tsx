@@ -1,15 +1,15 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
   Loader2, Send, CalendarClock, Image as ImageIcon,
-  Link2, CheckCircle2, Target, Puzzle,
+  Link2, CheckCircle2, Target, Puzzle, ListChecks, Pencil, X,
 } from "lucide-react";
 
-import { createPostAction } from "@/actions/posts";
+import { createPostAction, updatePostAction } from "@/actions/posts";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -24,8 +24,10 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Database } from "@/lib/supabase/types";
+import type { PostRow } from "@/components/dashboard/posts-table";
 
 type FacebookToken = Database["public"]["Tables"]["facebook_tokens"]["Row"];
+type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["Row"];
 
 // ── Validation Schema ─────────────────────────────────────────────────────────
 const urlOrEmpty = z
@@ -37,8 +39,8 @@ const urlOrEmpty = z
 
 const postSchema = z
   .object({
-    // Optional — when empty the post is saved for the Chrome Extension to handle
     facebookTokenId: z.string().optional(),
+    distributionListId: z.string().optional(),
     targetId: z
       .string()
       .optional()
@@ -77,26 +79,33 @@ const postSchema = z
 
 type PostFormValues = z.infer<typeof postSchema>;
 
+// ── Sentinels ─────────────────────────────────────────────────────────────────
+const EXTENSION_SENTINEL = "__none__";
+const DIST_LIST_SENTINEL = "__none__";
+
 // ── Component ─────────────────────────────────────────────────────────────────
 interface PostComposerProps {
   pages?: FacebookToken[] | null;
+  distributionLists?: DistributionListRow[] | null;
+  editingPost?: PostRow | null;
+  onEditDone?: () => void;
 }
 
-export function PostComposer({ pages }: PostComposerProps) {
+export function PostComposer({ pages, distributionLists, editingPost, onEditDone }: PostComposerProps) {
   const safePages = pages ?? [];
+  const safeLists = distributionLists ?? [];
+  const isEditing = !!editingPost;
 
   const [serverError, setServerError] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
+  const [successCount, setSuccessCount] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
-
-  // "__none__" is the sentinel for "use Chrome Extension (no page token)"
-  // Radix Select requires non-empty string values, so we can't use "".
-  const EXTENSION_SENTINEL = "__none__";
 
   const form = useForm<PostFormValues>({
     resolver: zodResolver(postSchema),
     defaultValues: {
-      facebookTokenId: EXTENSION_SENTINEL, // always default to extension mode
+      facebookTokenId: EXTENSION_SENTINEL,
+      distributionListId: DIST_LIST_SENTINEL,
       targetId: "",
       content: "",
       imageUrl: "",
@@ -106,27 +115,92 @@ export function PostComposer({ pages }: PostComposerProps) {
     },
   });
 
+  // Prefill form when entering/leaving edit mode
+  useEffect(() => {
+    if (editingPost) {
+      // Convert stored UTC scheduled_at to local datetime-local string
+      const localScheduledAt = editingPost.scheduled_at
+        ? new Date(editingPost.scheduled_at)
+            .toLocaleString("sv-SE")
+            .replace(" ", "T")
+            .slice(0, 16)
+        : "";
+
+      form.reset({
+        facebookTokenId: editingPost.facebook_tokens
+          ? (editingPost as unknown as { facebook_token_id: string }).facebook_token_id ?? EXTENSION_SENTINEL
+          : EXTENSION_SENTINEL,
+        distributionListId: DIST_LIST_SENTINEL,
+        targetId: (editingPost as unknown as { target_id: string | null }).target_id ?? "",
+        content: editingPost.content,
+        imageUrl: (editingPost as unknown as { image_url: string | null }).image_url ?? "",
+        linkUrl: (editingPost as unknown as { link_url: string | null }).link_url ?? "",
+        publishMode: editingPost.scheduled_at ? "scheduled" : "now",
+        scheduledAt: localScheduledAt,
+      });
+    } else {
+      form.reset({
+        facebookTokenId: EXTENSION_SENTINEL,
+        distributionListId: DIST_LIST_SENTINEL,
+        targetId: "",
+        content: "",
+        imageUrl: "",
+        linkUrl: "",
+        publishMode: "now",
+        scheduledAt: "",
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingPost]);
+
   const publishMode = form.watch("publishMode");
   const watchedTokenId = form.watch("facebookTokenId");
+  const watchedDistListId = form.watch("distributionListId");
   const contentLength = form.watch("content")?.length ?? 0;
 
-  // Extension mode = no pages connected, OR user explicitly selected "personal profile"
   const useExtension = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
+  const useDistList = !!watchedDistListId && watchedDistListId !== DIST_LIST_SENTINEL;
+  const selectedList = safeLists.find((l) => l.id === watchedDistListId);
 
-  // Min datetime: now + 5 minutes
   const minDateTime = new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16);
 
   function onSubmit(values: PostFormValues) {
     setServerError(null);
     startTransition(async () => {
+      // ── Edit mode ─────────────────────────────────────────────────────────
+      if (isEditing && editingPost) {
+        const result = await updatePostAction({
+          postId: editingPost.id,
+          content: values.content,
+          targetId: values.targetId?.trim() || undefined,
+          imageUrl: values.imageUrl || undefined,
+          linkUrl: values.linkUrl || undefined,
+          publishMode: values.publishMode,
+          scheduledAt: values.scheduledAt || undefined,
+        });
+        if (result.error) {
+          setServerError(result.error);
+        } else {
+          onEditDone?.();
+        }
+        return;
+      }
+
+      // ── Create mode ───────────────────────────────────────────────────────
       const resolvedTokenId =
         values.facebookTokenId === EXTENSION_SENTINEL
           ? undefined
           : values.facebookTokenId?.trim() || undefined;
 
+      const resolvedDistListId =
+        values.distributionListId === DIST_LIST_SENTINEL
+          ? undefined
+          : values.distributionListId;
+
       const result = await createPostAction({
         facebookTokenId: resolvedTokenId,
         targetId: values.targetId?.trim() || undefined,
+        distributionListId: resolvedDistListId,
         content: values.content,
         imageUrl: values.imageUrl || undefined,
         linkUrl: values.linkUrl || undefined,
@@ -138,12 +212,17 @@ export function PostComposer({ pages }: PostComposerProps) {
         setServerError(result.error);
       } else {
         setIsSuccess(true);
+        setSuccessCount(result.count ?? null);
         form.reset({
           facebookTokenId: values.facebookTokenId ?? EXTENSION_SENTINEL,
+          distributionListId: DIST_LIST_SENTINEL,
           targetId: values.targetId ?? "",
           publishMode: "now",
         });
-        setTimeout(() => setIsSuccess(false), 4000);
+        setTimeout(() => {
+          setIsSuccess(false);
+          setSuccessCount(null);
+        }, 5000);
       }
     });
   }
@@ -151,15 +230,33 @@ export function PostComposer({ pages }: PostComposerProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <Send className="h-5 w-5 text-primary" />
-          כתיבת פוסט חדש
+        <CardTitle className="flex items-center justify-between gap-2 text-lg">
+          <span className="flex items-center gap-2">
+            {isEditing ? (
+              <Pencil className="h-5 w-5 text-primary" />
+            ) : (
+              <Send className="h-5 w-5 text-primary" />
+            )}
+            {isEditing ? "עריכת פוסט" : "כתיבת פוסט חדש"}
+          </span>
+          {isEditing && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground text-xs"
+              onClick={onEditDone}
+            >
+              <X className="h-3.5 w-3.5 ms-1" />
+              ביטול עריכה
+            </Button>
+          )}
         </CardTitle>
       </CardHeader>
 
       <CardContent>
-        {/* Extension-mode notice — shown when no page is selected */}
-        {useExtension && (
+        {/* Extension-mode notice */}
+        {!isEditing && useExtension && !useDistList && (
           <div className="mb-5 flex items-start gap-2.5 rounded-md bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800">
             <Puzzle className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
@@ -170,12 +267,25 @@ export function PostComposer({ pages }: PostComposerProps) {
           </div>
         )}
 
+        {/* Distribution list notice */}
+        {!isEditing && useDistList && selectedList && (
+          <div className="mb-5 flex items-start gap-2.5 rounded-md bg-purple-50 border border-purple-200 px-4 py-3 text-sm text-purple-800">
+            <ListChecks className="h-4 w-4 shrink-0 mt-0.5" />
+            <span>
+              הפוסט יפורסם ל-<strong>{selectedList.group_ids.length} קבוצות</strong>{" "}
+              מרשימת <strong>{selectedList.name}</strong> — עם השהיה של 2–5 דקות בין קבוצה לקבוצה.
+            </span>
+          </div>
+        )}
+
         {/* Success */}
         {isSuccess && (
           <div className="mb-4 flex items-center gap-2 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>
-              {publishMode === "now"
+              {successCount && successCount > 1
+                ? `נוצרו ${successCount} פוסטים — יפורסמו בהפרש של 2–5 דקות בין קבוצה לקבוצה!`
+                : publishMode === "now"
                 ? "הפוסט נשמר ויפורסם בקרוב על ידי התוסף!"
                 : "הפוסט תוזמן בהצלחה!"}
             </span>
@@ -192,47 +302,88 @@ export function PostComposer({ pages }: PostComposerProps) {
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
 
-            {/* ── Row: Page selector (optional) + Target ID ────────────── */}
-            <div className="grid gap-4 sm:grid-cols-2">
-
-              {/* Page selector — always shown when pages are connected */}
-              {safePages.length > 0 && (
-                <FormField
-                  control={form.control}
-                  name="facebookTokenId"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>ערוץ פרסום</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {/* Default: extension mode — always first */}
-                          <SelectItem value={EXTENSION_SENTINEL}>
-                            🧩 פרופיל אישי (באמצעות התוסף)
-                          </SelectItem>
-                          {safePages.map((page) => (
-                            <SelectItem key={page.id} value={page.id}>
-                              📄 {page.page_name ?? `דף ${page.page_id}`}
+            {/* ── Row: Page selector + Distribution list (hidden in edit mode) ── */}
+            {!isEditing && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                {/* Page selector */}
+                {safePages.length > 0 && (
+                  <FormField
+                    control={form.control}
+                    name="facebookTokenId"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>ערוץ פרסום</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value}>
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value={EXTENSION_SENTINEL}>
+                              🧩 פרופיל אישי (באמצעות התוסף)
                             </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormDescription className="text-xs">
-                        {useExtension
-                          ? "הפוסט יפורסם דרך תוסף Chrome עם הפרופיל האישי"
-                          : "הפוסט יפורסם דרך Graph API עם אסימון הדף"}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              )}
+                            {safePages.map((page) => (
+                              <SelectItem key={page.id} value={page.id}>
+                                📄 {page.page_name ?? `דף ${page.page_id}`}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormDescription className="text-xs">
+                          {useExtension
+                            ? "הפוסט יפורסם דרך תוסף Chrome עם הפרופיל האישי"
+                            : "הפוסט יפורסם דרך Graph API עם אסימון הדף"}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
 
-              {/* Target ID — Group ID for extension posts */}
+                {/* Distribution list selector */}
+                {safeLists.length > 0 && (
+                  <FormField
+                    control={form.control}
+                    name="distributionListId"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="flex items-center gap-1.5">
+                          <ListChecks className="h-3.5 w-3.5 text-muted-foreground" />
+                          רשימת תפוצה
+                        </FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value}>
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value={DIST_LIST_SENTINEL}>
+                              פרסום ליעד בודד
+                            </SelectItem>
+                            {safeLists.map((list) => (
+                              <SelectItem key={list.id} value={list.id}>
+                                {list.name} ({list.group_ids.length} קבוצות)
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormDescription className="text-xs">
+                          {useDistList
+                            ? `יפורסם ל-${selectedList?.group_ids.length ?? 0} קבוצות עם השהיה`
+                            : "בחר רשימה לפרסום מרובה"}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+              </div>
+            )}
+
+            {/* ── Target ID (single-group mode) ─────────────────────────────── */}
+            {!useDistList && (
               <FormField
                 control={form.control}
                 name="targetId"
@@ -260,11 +411,21 @@ export function PostComposer({ pages }: PostComposerProps) {
                   </FormItem>
                 )}
               />
-            </div>
+            )}
+
+            {/* Distribution list summary (replaces targetId when list is selected) */}
+            {useDistList && selectedList && (
+              <div className="rounded-md border border-purple-200 bg-purple-50/50 px-4 py-3 text-sm text-purple-700">
+                <span className="font-medium">{selectedList.name}</span>
+                {" — "}
+                {selectedList.group_ids.slice(0, 3).join(", ")}
+                {selectedList.group_ids.length > 3 && ` +${selectedList.group_ids.length - 3} נוספות`}
+              </div>
+            )}
 
             <Separator />
 
-            {/* ── Post content ─────────────────────────────────────────── */}
+            {/* ── Post content ──────────────────────────────────────────────── */}
             <FormField
               control={form.control}
               name="content"
@@ -292,7 +453,7 @@ export function PostComposer({ pages }: PostComposerProps) {
               )}
             />
 
-            {/* ── Optional: Image URL ─────────────────────────────────── */}
+            {/* ── Image URL ─────────────────────────────────────────────────── */}
             <FormField
               control={form.control}
               name="imageUrl"
@@ -316,7 +477,7 @@ export function PostComposer({ pages }: PostComposerProps) {
               )}
             />
 
-            {/* ── Optional: Link URL ──────────────────────────────────── */}
+            {/* ── Link URL ──────────────────────────────────────────────────── */}
             <FormField
               control={form.control}
               name="linkUrl"
@@ -342,7 +503,7 @@ export function PostComposer({ pages }: PostComposerProps) {
 
             <Separator />
 
-            {/* ── Publish mode ─────────────────────────────────────────── */}
+            {/* ── Publish mode ──────────────────────────────────────────────── */}
             <FormField
               control={form.control}
               name="publishMode"
@@ -352,7 +513,7 @@ export function PostComposer({ pages }: PostComposerProps) {
                   <FormControl>
                     <RadioGroup
                       onValueChange={field.onChange}
-                      defaultValue={field.value}
+                      value={field.value}
                       className="flex flex-col gap-2 sm:flex-row sm:gap-4"
                     >
                       <label
@@ -393,7 +554,7 @@ export function PostComposer({ pages }: PostComposerProps) {
               )}
             />
 
-            {/* ── Date/Time picker ─────────────────────────────────────── */}
+            {/* ── Date/Time picker ──────────────────────────────────────────── */}
             {publishMode === "scheduled" && (
               <FormField
                 control={form.control}
@@ -416,10 +577,12 @@ export function PostComposer({ pages }: PostComposerProps) {
               />
             )}
 
-            {/* ── Submit ───────────────────────────────────────────────── */}
+            {/* ── Submit ────────────────────────────────────────────────────── */}
             <Button type="submit" className="w-full sm:w-auto" disabled={isPending}>
               {isPending ? (
                 <><Loader2 className="ms-2 h-4 w-4 animate-spin" />שומר...</>
+              ) : isEditing ? (
+                <><Pencil className="ms-2 h-4 w-4" />שמור שינויים</>
               ) : publishMode === "now" ? (
                 <><Send className="ms-2 h-4 w-4" />שמור לפרסום</>
               ) : (

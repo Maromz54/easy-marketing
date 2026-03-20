@@ -85,7 +85,7 @@ export type Database = {
           image_url: string | null;
           link_url: string | null;
           target_id: string | null;
-          status: "draft" | "scheduled" | "processing" | "published" | "failed";
+          status: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled";
           scheduled_at: string | null;
           published_at: string | null;
           facebook_post_id: string | null;
@@ -100,7 +100,7 @@ export type Database = {
           image_url?: string | null;
           link_url?: string | null;
           target_id?: string | null;
-          status?: "draft" | "scheduled" | "processing" | "published" | "failed";
+          status?: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled";
           scheduled_at?: string | null;
           published_at?: string | null;
           facebook_post_id?: string | null;
@@ -115,7 +115,7 @@ export type Database = {
           image_url?: string | null;
           link_url?: string | null;
           target_id?: string | null;
-          status?: "draft" | "scheduled" | "processing" | "published" | "failed";
+          status?: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled";
           scheduled_at?: string | null;
           published_at?: string | null;
           facebook_post_id?: string | null;
@@ -174,6 +174,41 @@ export type Database = {
           }
         ];
       };
+      distribution_lists: {
+        Row: {
+          id: string;
+          user_id: string;
+          name: string;
+          group_ids: string[];
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          name: string;
+          group_ids?: string[];
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          name?: string;
+          group_ids?: string[];
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "distribution_lists_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
       link_clicks: {
         Row: {
           id: string;
@@ -213,7 +248,7 @@ export type Database = {
     Views: Record<string, never>;
     Functions: Record<string, never>;
     Enums: {
-      post_status: "draft" | "scheduled" | "processing" | "published" | "failed";
+      post_status: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled";
     };
     CompositeTypes: Record<string, never>;
   };

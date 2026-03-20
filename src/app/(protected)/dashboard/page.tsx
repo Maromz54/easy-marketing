@@ -15,6 +15,7 @@ export const metadata: Metadata = {
 };
 
 type FbTokenRow = Database["public"]["Tables"]["facebook_tokens"]["Row"];
+type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["Row"];
 
 interface DashboardPageProps {
   searchParams: { fb_error?: string; fb_success?: string };
@@ -90,6 +91,15 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
     ...link,
     clickCount: clickCountMap.get(link.id) ?? 0,
   }));
+
+  // Distribution lists
+  const { data: listsData } = await supabase
+    .from("distribution_lists")
+    .select("id, user_id, name, group_ids, created_at, updated_at")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+    .limit(200);
+  const distributionLists = (listsData ?? []) as DistributionListRow[];
 
   // ── Derived stats ──────────────────────────────────────────────────────
   const displayName = profile?.full_name ?? user.email ?? "משתמש";
@@ -167,6 +177,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           fbSuccess={fbSuccess}
           links={links}
           appUrl={appUrl}
+          distributionLists={distributionLists}
         />
 
       </main>

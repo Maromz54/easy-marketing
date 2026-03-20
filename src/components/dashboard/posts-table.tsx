@@ -1,16 +1,19 @@
-import { FileText, AlertCircle } from "lucide-react";
+"use client";
+
+import { FileText, AlertCircle, Pencil, X, Loader2 } from "lucide-react";
 import {
   Table, TableBody, TableCell, TableHead,
   TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface PostRow {
   id: string;
   content: string;
-  status: "draft" | "scheduled" | "processing" | "published" | "failed";
+  status: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled";
   scheduled_at: string | null;
   published_at: string | null;
   created_at: string;
@@ -22,6 +25,9 @@ export interface PostRow {
 
 interface PostsTableProps {
   posts: PostRow[];
+  onEdit: (post: PostRow) => void;
+  onCancel: (postId: string) => void;
+  cancellingId: string | null;
 }
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -46,10 +52,14 @@ const STATUS_CONFIG = {
     label: "בביצוע",
     className: "border-transparent bg-blue-100 text-blue-800 hover:bg-blue-100",
   },
+  cancelled: {
+    label: "בוטל",
+    className: "border-transparent bg-slate-100 text-slate-400 hover:bg-slate-100",
+  },
 } as const;
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export function PostsTable({ posts }: PostsTableProps) {
+export function PostsTable({ posts, onEdit, onCancel, cancellingId }: PostsTableProps) {
   return (
     <section className="space-y-4">
       <div>
@@ -84,11 +94,18 @@ export function PostsTable({ posts }: PostsTableProps) {
                   <TableHead>דף</TableHead>
                   <TableHead>סטטוס</TableHead>
                   <TableHead>תאריך</TableHead>
+                  <TableHead className="w-[100px]">פעולות</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {posts.map((post) => (
-                  <PostTableRow key={post.id} post={post} />
+                  <PostTableRow
+                    key={post.id}
+                    post={post}
+                    onEdit={onEdit}
+                    onCancel={onCancel}
+                    cancellingId={cancellingId}
+                  />
                 ))}
               </TableBody>
             </Table>
@@ -100,16 +117,23 @@ export function PostsTable({ posts }: PostsTableProps) {
 }
 
 // ── Single row ─────────────────────────────────────────────────────────────────
-function PostTableRow({ post }: { post: PostRow }) {
+function PostTableRow({
+  post,
+  onEdit,
+  onCancel,
+  cancellingId,
+}: {
+  post: PostRow;
+  onEdit: (post: PostRow) => void;
+  onCancel: (postId: string) => void;
+  cancellingId: string | null;
+}) {
   const config = STATUS_CONFIG[post.status] ?? STATUS_CONFIG.draft;
+  const isCancelling = cancellingId === post.id;
 
-  // Truncate long content
   const contentPreview =
-    post.content.length > 100
-      ? post.content.slice(0, 100) + "…"
-      : post.content;
+    post.content.length > 100 ? post.content.slice(0, 100) + "…" : post.content;
 
-  // Determine the most relevant date to show per status
   const displayDate =
     post.status === "published" && post.published_at
       ? { label: "פורסם", value: post.published_at }
@@ -126,7 +150,7 @@ function PostTableRow({ post }: { post: PostRow }) {
   }).format(new Date(displayDate.value));
 
   return (
-    <TableRow>
+    <TableRow className={isCancelling ? "opacity-50" : ""}>
       {/* Content */}
       <TableCell className="align-top">
         <p className="text-sm leading-relaxed">{contentPreview}</p>
@@ -159,6 +183,39 @@ function PostTableRow({ post }: { post: PostRow }) {
           {displayDate.label}
         </span>
         <span dir="ltr">{formattedDate}</span>
+      </TableCell>
+
+      {/* Actions — only for scheduled posts */}
+      <TableCell>
+        {post.status === "scheduled" && (
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={() => onEdit(post)}
+              title="ערוך פוסט"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              <span className="sr-only">ערוך</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={() => onCancel(post.id)}
+              disabled={isCancelling}
+              title="בטל פוסט"
+            >
+              {isCancelling ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <X className="h-3.5 w-3.5" />
+              )}
+              <span className="sr-only">בטל</span>
+            </Button>
+          </div>
+        )}
       </TableCell>
     </TableRow>
   );
