@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
   Loader2, Send, CalendarClock, Image as ImageIcon,
-  Link2, CheckCircle2, Target,
+  Link2, CheckCircle2, Target, Puzzle,
 } from "lucide-react";
 
 import { createPostAction } from "@/actions/posts";
@@ -37,7 +37,8 @@ const urlOrEmpty = z
 
 const postSchema = z
   .object({
-    facebookTokenId: z.string().min(1, { message: "אנא בחר דף פייסבוק לפרסום." }),
+    // Optional — when empty the post is saved for the Chrome Extension to handle
+    facebookTokenId: z.string().optional(),
     targetId: z
       .string()
       .optional()
@@ -78,10 +79,12 @@ type PostFormValues = z.infer<typeof postSchema>;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 interface PostComposerProps {
-  pages: FacebookToken[];
+  pages?: FacebookToken[] | null;
 }
 
 export function PostComposer({ pages }: PostComposerProps) {
+  const safePages = pages ?? [];
+
   const [serverError, setServerError] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -89,7 +92,7 @@ export function PostComposer({ pages }: PostComposerProps) {
   const form = useForm<PostFormValues>({
     resolver: zodResolver(postSchema),
     defaultValues: {
-      facebookTokenId: pages[0]?.id ?? "",
+      facebookTokenId: safePages[0]?.id ?? "",
       targetId: "",
       content: "",
       imageUrl: "",
@@ -100,7 +103,7 @@ export function PostComposer({ pages }: PostComposerProps) {
   });
 
   const publishMode = form.watch("publishMode");
-  const contentLength = form.watch("content").length;
+  const contentLength = form.watch("content")?.length ?? 0;
 
   // Min datetime: now + 5 minutes
   const minDateTime = new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16);
@@ -109,7 +112,7 @@ export function PostComposer({ pages }: PostComposerProps) {
     setServerError(null);
     startTransition(async () => {
       const result = await createPostAction({
-        facebookTokenId: values.facebookTokenId,
+        facebookTokenId: values.facebookTokenId?.trim() || undefined,
         targetId: values.targetId?.trim() || undefined,
         content: values.content,
         imageUrl: values.imageUrl || undefined,
@@ -122,22 +125,14 @@ export function PostComposer({ pages }: PostComposerProps) {
         setServerError(result.error);
       } else {
         setIsSuccess(true);
-        form.reset({ facebookTokenId: values.facebookTokenId, publishMode: "now" });
+        form.reset({
+          facebookTokenId: values.facebookTokenId ?? "",
+          targetId: values.targetId ?? "",
+          publishMode: "now",
+        });
         setTimeout(() => setIsSuccess(false), 4000);
       }
     });
-  }
-
-  // ── No pages connected ────────────────────────────────────────────────────
-  if (pages.length === 0) {
-    return (
-      <Card className="border-dashed">
-        <CardContent className="py-10 text-center text-muted-foreground text-sm">
-          <CalendarClock className="mx-auto mb-3 h-10 w-10 opacity-30" />
-          <p>חבר לפחות דף פייסבוק אחד כדי להתחיל לפרסם פוסטים.</p>
-        </CardContent>
-      </Card>
-    );
   }
 
   return (
@@ -150,12 +145,25 @@ export function PostComposer({ pages }: PostComposerProps) {
       </CardHeader>
 
       <CardContent>
+        {/* Extension-mode notice when no pages are connected */}
+        {safePages.length === 0 && (
+          <div className="mb-5 flex items-start gap-2.5 rounded-md bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800">
+            <Puzzle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span>
+              לא חוברו דפי פייסבוק. הפוסט יישמר במסד הנתונים ויפורסם
+              על ידי <strong>תוסף Chrome</strong> — ודא שהוזן מזהה יעד (קבוצה).
+            </span>
+          </div>
+        )}
+
         {/* Success */}
         {isSuccess && (
           <div className="mb-4 flex items-center gap-2 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>
-              {publishMode === "now" ? "הפוסט פורסם בהצלחה!" : "הפוסט תוזמן בהצלחה!"}
+              {publishMode === "now"
+                ? "הפוסט נשמר ויפורסם בקרוב על ידי התוסף!"
+                : "הפוסט תוזמן בהצלחה!"}
             </span>
           </div>
         )}
@@ -170,39 +178,41 @@ export function PostComposer({ pages }: PostComposerProps) {
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
 
-            {/* ── Row: Page selector + Target ID ──────────────────────── */}
+            {/* ── Row: Page selector (optional) + Target ID ────────────── */}
             <div className="grid gap-4 sm:grid-cols-2">
 
-              {/* Page (provides the Access Token) */}
-              <FormField
-                control={form.control}
-                name="facebookTokenId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>דף פייסבוק (מקור האסימון)</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="בחר דף..." />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {pages.map((page) => (
-                          <SelectItem key={page.id} value={page.id}>
-                            {page.page_name ?? `דף ${page.page_id}`}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormDescription className="text-xs">
-                      הדף שאסימון הגישה שלו ישמש לפרסום
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              {/* Page selector — only shown when pages are connected */}
+              {safePages.length > 0 && (
+                <FormField
+                  control={form.control}
+                  name="facebookTokenId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>דף פייסבוק (מקור האסימון)</FormLabel>
+                      <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="בחר דף (אופציונלי)..." />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {safePages.map((page) => (
+                            <SelectItem key={page.id} value={page.id}>
+                              {page.page_name ?? `דף ${page.page_id}`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormDescription className="text-xs">
+                        השאר ריק לפרסום דרך תוסף Chrome בלבד
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
 
-              {/* Target ID — defaults to the page itself */}
+              {/* Target ID — Group ID for extension posts */}
               <FormField
                 control={form.control}
                 name="targetId"
@@ -211,7 +221,9 @@ export function PostComposer({ pages }: PostComposerProps) {
                     <FormLabel className="flex items-center gap-1.5">
                       <Target className="h-3.5 w-3.5 text-muted-foreground" />
                       מזהה יעד{" "}
-                      <span className="text-muted-foreground font-normal text-xs">(אופציונלי)</span>
+                      <span className="text-muted-foreground font-normal text-xs">
+                        {safePages.length === 0 ? "(נדרש לתוסף)" : "(אופציונלי)"}
+                      </span>
                     </FormLabel>
                     <FormControl>
                       <Input
@@ -222,8 +234,7 @@ export function PostComposer({ pages }: PostComposerProps) {
                       />
                     </FormControl>
                     <FormDescription className="text-xs">
-                      השאר ריק לפרסום בדף עצמו.{" "}
-                      למשל: מזהה קבוצת פייסבוק שהדף חבר בה כאדמין
+                      מזהה קבוצת הפייסבוק לפרסום דרך התוסף
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -335,7 +346,9 @@ export function PostComposer({ pages }: PostComposerProps) {
                         <RadioGroupItem value="now" id="mode-now" />
                         <div>
                           <p className="text-sm font-medium">פרסם עכשיו</p>
-                          <p className="text-xs text-muted-foreground">הפוסט יפורסם מיד</p>
+                          <p className="text-xs text-muted-foreground">
+                            יישמר ויפורסם בדקה הקרובה
+                          </p>
                         </div>
                       </label>
 
@@ -388,7 +401,7 @@ export function PostComposer({ pages }: PostComposerProps) {
               {isPending ? (
                 <><Loader2 className="ms-2 h-4 w-4 animate-spin" />שומר...</>
               ) : publishMode === "now" ? (
-                <><Send className="ms-2 h-4 w-4" />שמור ופרסם עכשיו</>
+                <><Send className="ms-2 h-4 w-4" />שמור לפרסום</>
               ) : (
                 <><CalendarClock className="ms-2 h-4 w-4" />תזמן פרסום</>
               )}

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EasyMarketing Poster</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
+      font-size: 14px;
+      background: #f9fafb;
+      color: #111827;
+      width: 360px;
+      padding: 16px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 20px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    .logo { font-size: 18px; font-weight: 700; color: #2563eb; }
+    .subtitle { font-size: 12px; color: #6b7280; }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 4px;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 13px;
+      background: #fff;
+      outline: none;
+      direction: ltr;
+    }
+
+    input:focus { border-color: #2563eb; box-shadow: 0 0 0 2px #dbeafe; }
+
+    .field { margin-bottom: 14px; }
+
+    .hint {
+      font-size: 11px;
+      color: #9ca3af;
+      margin-top: 4px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 9px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: background 0.15s;
+    }
+
+    .btn-primary { background: #2563eb; color: #fff; width: 100%; }
+    .btn-primary:hover { background: #1d4ed8; }
+
+    .status {
+      margin-top: 12px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      display: none;
+    }
+
+    .status.success { background: #d1fae5; color: #065f46; display: block; }
+    .status.error   { background: #fee2e2; color: #991b1b; display: block; }
+
+    .divider {
+      border-top: 1px solid #e5e7eb;
+      margin: 16px 0 12px;
+    }
+
+    .info-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      color: #1e40af;
+      line-height: 1.6;
+    }
+
+    .indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 10px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #d1d5db;
+    }
+
+    .dot.active { background: #22c55e; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="logo">EasyMarketing</div>
+      <div class="subtitle">הגדרות תוסף פרסום</div>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="apiUrl">כתובת האפליקציה (API URL)</label>
+    <input type="text" id="apiUrl" placeholder="https://your-app.vercel.app" />
+    <div class="hint">לפיתוח מקומי: http://localhost:3000</div>
+  </div>
+
+  <div class="field">
+    <label for="secret">מפתח סודי (Extension Secret)</label>
+    <input type="password" id="secret" placeholder="הזן את EXTENSION_SECRET" />
+    <div class="hint">מוגדר במשתני הסביבה של Vercel</div>
+  </div>
+
+  <button class="btn btn-primary" id="saveBtn">שמור הגדרות</button>
+
+  <div class="status" id="status"></div>
+
+  <div class="divider"></div>
+
+  <div class="info-box">
+    <strong>פעולה אוטומטית:</strong> התוסף בודק פוסטים ממתינים כל דקה ומפרסם אותם
+    בפייסבוק ב־Background.
+  </div>
+
+  <div class="indicator">
+    <div class="dot" id="dot"></div>
+    <span id="indicatorText">לא מוגדר</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

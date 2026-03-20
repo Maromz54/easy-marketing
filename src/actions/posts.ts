@@ -5,9 +5,9 @@ import { createClient } from "@/lib/supabase/server";
 import { publishToPage } from "@/lib/facebook";
 
 export interface CreatePostInput {
-  facebookTokenId: string;
-  /** Optional override: Group ID or any Page ID where this Page is an admin.
-   *  If omitted, defaults to the Page's own page_id. */
+  /** When omitted the post is queued for the Chrome Extension (no Graph API call). */
+  facebookTokenId?: string;
+  /** Group ID or alternate Page ID. Required for extension-only posts. */
   targetId?: string;
   content: string;
   imageUrl?: string;
@@ -31,11 +31,43 @@ export async function createPostAction(
   } = await supabase.auth.getUser();
   if (!user) return { error: "המשתמש אינו מחובר." };
 
+  const hasToken = !!input.facebookTokenId?.trim();
+
+  // ── Extension-only mode (no Facebook Page token) ───────────────────────
+  // Save as 'scheduled' so the Chrome Extension can pick it up.
+  // For "now" mode we set scheduled_at = NOW() so the extension claims it
+  // within the next polling cycle (≤ 1 minute).
+  if (!hasToken) {
+    const scheduledAt =
+      input.publishMode === "scheduled" && input.scheduledAt
+        ? new Date(input.scheduledAt).toISOString()
+        : new Date().toISOString();
+
+    const { error: dbError } = await supabase.from("posts").insert({
+      user_id: user.id,
+      facebook_token_id: null,
+      target_id: input.targetId?.trim() || null,
+      content: input.content,
+      image_url: input.imageUrl || null,
+      link_url: input.linkUrl || null,
+      status: "scheduled",
+      scheduled_at: scheduledAt,
+    });
+
+    if (dbError) {
+      console.error("[createPostAction] DB insert error (extension mode):", dbError);
+      return { error: "שגיאה בשמירת הפוסט. אנא נסה שוב." };
+    }
+
+    revalidatePath("/dashboard");
+    return { success: true };
+  }
+
   // ── Validate the token belongs to this user ────────────────────────────
   const { data: tokenData } = await supabase
     .from("facebook_tokens")
     .select("id, page_id, access_token")
-    .eq("id", input.facebookTokenId)
+    .eq("id", input.facebookTokenId!)
     .eq("user_id", user.id)
     .single();
 
@@ -44,8 +76,6 @@ export async function createPostAction(
   }
 
   const token = tokenData as { id: string; page_id: string; access_token: string };
-
-  // targetId: explicit override or fall back to the page's own ID
   const targetId = input.targetId?.trim() || token.page_id;
 
   // ── Scheduled — save to DB only ────────────────────────────────────────

@@ -85,7 +85,7 @@ export type Database = {
           image_url: string | null;
           link_url: string | null;
           target_id: string | null;
-          status: "draft" | "scheduled" | "published" | "failed";
+          status: "draft" | "scheduled" | "processing" | "published" | "failed";
           scheduled_at: string | null;
           published_at: string | null;
           facebook_post_id: string | null;
@@ -100,7 +100,7 @@ export type Database = {
           image_url?: string | null;
           link_url?: string | null;
           target_id?: string | null;
-          status?: "draft" | "scheduled" | "published" | "failed";
+          status?: "draft" | "scheduled" | "processing" | "published" | "failed";
           scheduled_at?: string | null;
           published_at?: string | null;
           facebook_post_id?: string | null;
@@ -115,7 +115,7 @@ export type Database = {
           image_url?: string | null;
           link_url?: string | null;
           target_id?: string | null;
-          status?: "draft" | "scheduled" | "published" | "failed";
+          status?: "draft" | "scheduled" | "processing" | "published" | "failed";
           scheduled_at?: string | null;
           published_at?: string | null;
           facebook_post_id?: string | null;
@@ -213,7 +213,7 @@ export type Database = {
     Views: Record<string, never>;
     Functions: Record<string, never>;
     Enums: {
-      post_status: "draft" | "scheduled" | "published" | "failed";
+      post_status: "draft" | "scheduled" | "processing" | "published" | "failed";
     };
     CompositeTypes: Record<string, never>;
   };

@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 export interface PostRow {
   id: string;
   content: string;
-  status: "draft" | "scheduled" | "published" | "failed";
+  status: "draft" | "scheduled" | "processing" | "published" | "failed";
   scheduled_at: string | null;
   published_at: string | null;
   created_at: string;
@@ -41,6 +41,10 @@ const STATUS_CONFIG = {
   draft: {
     label: "טיוטה",
     className: "border-transparent bg-slate-100 text-slate-600 hover:bg-slate-100",
+  },
+  processing: {
+    label: "בביצוע",
+    className: "border-transparent bg-blue-100 text-blue-800 hover:bg-blue-100",
   },
 } as const;
 

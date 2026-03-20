@@ -1,6 +1,6 @@
 "use client";
 
-import { Send, Link2 } from "lucide-react";
+import { Send, Link2, Puzzle } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { ConnectedPages } from "./connected-pages";
@@ -8,6 +8,7 @@ import { PostComposer } from "./post-composer";
 import { PostsTable, type PostRow } from "./posts-table";
 import { LinkForm } from "./link-form";
 import { LinksTable, type LinkWithCount } from "./links-table";
+import { ExtensionTab } from "./extension-tab";
 import type { Database } from "@/lib/supabase/types";
 
 type FbTokenRow = Database["public"]["Tables"]["facebook_tokens"]["Row"];
@@ -47,6 +48,10 @@ export function DashboardTabs({
               {links.length}
             </span>
           )}
+        </TabsTrigger>
+        <TabsTrigger value="extension" className="flex items-center gap-2 flex-1 sm:flex-none">
+          <Puzzle className="h-4 w-4" />
+          חיבור תוסף
         </TabsTrigger>
       </TabsList>
 
@@ -95,6 +100,11 @@ export function DashboardTabs({
 
         {/* Links analytics table */}
         <LinksTable links={links} appUrl={appUrl} />
+      </TabsContent>
+
+      {/* ── Extension tab ────────────────────────────────────────────── */}
+      <TabsContent value="extension" className="mt-6">
+        <ExtensionTab appUrl={appUrl} />
       </TabsContent>
     </Tabs>
   );

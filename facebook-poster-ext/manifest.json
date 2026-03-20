@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "EasyMarketing Facebook Poster",
+  "version": "1.0.0",
+  "description": "מפרסם פוסטים בפייסבוק אוטומטית עבור EasyMarketing",
+
+  "permissions": [
+    "storage",
+    "alarms",
+    "scripting",
+    "tabs"
+  ],
+
+  "host_permissions": [
+    "*://www.facebook.com/*",
+    "<all_urls>"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "EasyMarketing Poster"
+  }
+}

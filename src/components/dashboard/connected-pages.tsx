@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Facebook, Plus, RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -8,7 +7,7 @@ import type { Database } from "@/lib/supabase/types";
 type FacebookToken = Database["public"]["Tables"]["facebook_tokens"]["Row"];
 
 interface ConnectedPagesProps {
-  pages: FacebookToken[];
+  pages?: FacebookToken[] | null;
   errorMessage?: string | null;
   successMessage?: string | null;
 }
@@ -18,6 +17,8 @@ export function ConnectedPages({
   errorMessage,
   successMessage,
 }: ConnectedPagesProps) {
+  const safePages = pages ?? [];
+
   return (
     <section className="space-y-4">
       {/* Section header */}
@@ -28,14 +29,14 @@ export function ConnectedPages({
             דפי פייסבוק מחוברים
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            חבר את דפי הפייסבוק שלך כדי לפרסם ולתזמן פוסטים
+            חבר דף פייסבוק כדי לפרסם ישירות דרך ה-API (אופציונלי — ניתן לפרסם גם דרך תוסף Chrome)
           </p>
         </div>
 
-        {/* Connect / Reconnect button */}
-        <Button asChild variant={pages.length > 0 ? "outline" : "default"} size="sm">
-          <Link href="/api/facebook/connect">
-            {pages.length > 0 ? (
+        {/* Connect / Reconnect — plain <a> for full-page navigation to avoid CORS */}
+        <Button asChild variant={safePages.length > 0 ? "outline" : "default"} size="sm">
+          <a href="/api/facebook/connect">
+            {safePages.length > 0 ? (
               <>
                 <RefreshCw className="h-4 w-4 me-1.5" />
                 חבר דפים נוספים
@@ -46,7 +47,7 @@ export function ConnectedPages({
                 התחבר לפייסבוק
               </>
             )}
-          </Link>
+          </a>
         </Button>
       </div>
 
@@ -64,29 +65,30 @@ export function ConnectedPages({
       )}
 
       {/* Pages list or empty state */}
-      {pages.length === 0 ? (
+      {safePages.length === 0 ? (
         <Card className="border-dashed">
-          <CardContent className="py-14 flex flex-col items-center justify-center text-center gap-4">
+          <CardContent className="py-10 flex flex-col items-center justify-center text-center gap-4">
             <div className="rounded-full bg-blue-50 p-4">
               <Facebook className="h-10 w-10 text-blue-400" />
             </div>
             <div className="space-y-1">
               <p className="font-medium">לא חוברו דפי פייסבוק עדיין</p>
               <p className="text-sm text-muted-foreground max-w-xs">
-                לחץ על "התחבר לפייסבוק" כדי לקשר את הדפים שלך ולהתחיל לפרסם
+                אופציונלי: חבר דף פייסבוק לפרסום ישיר דרך ה-API.
+                לפרסום בקבוצות עם פרופיל אישי, השתמש בתוסף Chrome.
               </p>
             </div>
-            <Button asChild>
-              <Link href="/api/facebook/connect">
+            <Button asChild variant="outline" size="sm">
+              <a href="/api/facebook/connect">
                 <Facebook className="h-4 w-4 me-1.5" />
-                התחבר לפייסבוק
-              </Link>
+                התחבר לפייסבוק (אופציונלי)
+              </a>
             </Button>
           </CardContent>
         </Card>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {pages.map((page) => (
+          {safePages.map((page) => (
             <PageCard key={page.id} page={page} />
           ))}
         </div>
