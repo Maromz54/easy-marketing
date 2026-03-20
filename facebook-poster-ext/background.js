@@ -75,10 +75,12 @@ async function checkAndPost() {
 
   const targetUrl = `https://www.facebook.com/groups/${post.target_id}`;
 
-  // 3. Open Facebook tab (inactive so user's current tab is undisturbed)
+  // 3. Open Facebook tab — MUST be active so execCommand gets a real focused
+  //    document. Chrome silently ignores execCommand in background tabs.
+  //    The tab is closed automatically after posting finishes.
   let tab;
   try {
-    tab = await chrome.tabs.create({ url: targetUrl, active: false });
+    tab = await chrome.tabs.create({ url: targetUrl, active: true });
   } catch (err) {
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed", "Failed to open Facebook tab: " + err.message);
     return;

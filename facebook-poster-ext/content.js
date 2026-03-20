@@ -2,25 +2,23 @@
 // EasyMarketing — Facebook DOM automation  (content.js)
 //
 // Injected via: chrome.scripting.executeScript({ files:["content.js"], world:"MAIN" })
-// Defines: window.easyMarketingPost(content, imageUrl, linkUrl) → { success, error }
+// Defines:      window.easyMarketingPost(content, imageUrl, linkUrl)
 //
-// TO DEBUG: DevTools on the Facebook tab → Console → filter "[EasyMarketing]"
+// DEBUG: Open DevTools on the Facebook tab → Console → filter "[EasyMarketing]"
 // ─────────────────────────────────────────────────────────────────────────────
 
 window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const log  = (...a) => console.log("[EasyMarketing]",  ...a);
-  const warn = (...a) => console.warn("[EasyMarketing]", ...a);
-  const err  = (...a) => console.error("[EasyMarketing]", ...a);
+  const log   = (...a) => console.log("[EasyMarketing]",  ...a);
+  const warn  = (...a) => console.warn("[EasyMarketing]", ...a);
+  const err   = (...a) => console.error("[EasyMarketing]", ...a);
 
   const fullContent = linkUrl ? `${content}\n${linkUrl}` : content;
 
   // ── STEP 1 — Click the "כאן כותבים..." trigger ───────────────────────────
-  // The contenteditable does NOT exist until this is clicked.
 
-  log("STEP 1 — Looking for composer trigger...");
+  log("STEP 1 — Searching for composer trigger...");
 
   const TRIGGER_TEXTS = [
     "כאן כותבים...", "Write something...", "כתוב משהו...",
@@ -28,20 +26,18 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
   ];
 
   let triggerEl = null;
-
   for (const text of TRIGGER_TEXTS) {
     triggerEl =
       document.querySelector(`[aria-label="${text}"]`) ||
       document.querySelector(`[aria-placeholder="${text}"]`);
-    if (triggerEl) { log(`Trigger found via aria: "${text}"`); break; }
+    if (triggerEl) { log(`Trigger via aria: "${text}"`); break; }
   }
 
   if (!triggerEl) {
-    log("aria scan found nothing — scanning div[role=button] by textContent...");
     for (const el of document.querySelectorAll('div[role="button"]')) {
       const txt = (el.textContent ?? "").trim();
       if (TRIGGER_TEXTS.some((t) => txt.includes(t.replace("...", "")))) {
-        log(`Trigger found by text: "${txt.slice(0, 50)}"`);
+        log(`Trigger via text: "${txt.slice(0, 50)}"`);
         triggerEl = el;
         break;
       }
@@ -51,8 +47,8 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
   if (!triggerEl) {
     const sample = [...document.querySelectorAll('div[role="button"]')]
       .slice(0, 10).map((e) => `"${(e.textContent ?? "").trim().slice(0, 40)}"`);
-    err("Trigger not found. Buttons on page:", sample.join(", "));
-    return { success: false, error: `Trigger not found. Page buttons: ${sample.join(", ")}` };
+    err("Trigger not found. Page buttons:", sample.join(", "));
+    return { success: false, error: `Trigger not found. Buttons: ${sample.join(", ")}` };
   }
 
   triggerEl.click();
@@ -77,10 +73,10 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
   for (let i = 1; i <= 15; i++) {
     for (const sel of COMPOSER_SELECTORS) {
       const el = document.querySelector(sel);
-      if (el) { log(`Composer found on attempt ${i}: ${sel}`); composer = el; break; }
+      if (el) { log(`Composer found (attempt ${i}): ${sel}`); composer = el; break; }
     }
     if (composer) break;
-    log(`Attempt ${i}/15 — not found yet...`);
+    log(`Attempt ${i}/15 — not yet...`);
     await sleep(1000);
   }
 
@@ -91,162 +87,228 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
     return { success: false, error: `Composer not found. dialogs=${d}, contenteditable=${c}` };
   }
 
-  log(`Composer OK: role="${composer.getAttribute("role")}" ce="${composer.contentEditable}"`);
+  log(`Composer: role="${composer.getAttribute("role")}" ce="${composer.contentEditable}"`);
 
-  // ── STEP 3 — Focus + inject text ─────────────────────────────────────────
-  // Lexical renders the "פרסם" button ONLY after it detects real text input.
-  // We try four methods; each is verified before moving on.
+  // ── STEP 3 — Human-like text injection ───────────────────────────────────
+  //
+  // Lexical renders the "פרסום" button only AFTER it detects real text input
+  // through its internal EditorState. We try five methods in order.
+  //
+  // CRITICAL: execCommand only fires a trusted beforeinput event when:
+  //   (a) the element IS document.activeElement, AND
+  //   (b) there is a valid Selection range inside the element.
+  // We verify both before each attempt.
 
-  log("STEP 3 — Injecting text (4 methods)...");
+  log("STEP 3 — Injecting text...");
 
-  // Full pointer + focus sequence
-  composer.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-  await sleep(80);
-  composer.dispatchEvent(new MouseEvent("mouseup",   { bubbles: true, cancelable: true }));
-  composer.dispatchEvent(new MouseEvent("click",     { bubbles: true, cancelable: true }));
-  await sleep(250);
-  composer.focus();
-  await sleep(400);
+  /** Place a cursor/selection at the end of `el`, preferring inside <p>. */
+  function placeCursorInComposer(el) {
+    try {
+      const p     = el.querySelector("p") ?? el;
+      const range = document.createRange();
+      // Empty Lexical editor: <p><br></p>
+      if (p.childNodes.length === 1 && p.firstChild?.nodeName === "BR") {
+        range.setStartBefore(p.firstChild);
+      } else {
+        range.selectNodeContents(p);
+        range.collapse(false); // end
+      }
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return true;
+    } catch (e) {
+      warn("placeCursorInComposer failed:", e.message);
+      return false;
+    }
+  }
 
-  // Place cursor at end
-  try {
-    const sel   = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(composer);
-    range.collapse(false);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    log("Cursor placed at end.");
-  } catch (e) { warn("Cursor placement failed:", e.message); }
+  /** Fire the follow-up events Facebook needs to "see" new text. */
+  function firePostInjectionEvents(el, data) {
+    el.dispatchEvent(new InputEvent("input",  { bubbles: true, inputType: "insertText", data }));
+    el.dispatchEvent(new Event("change",  { bubbles: true }));
+    // A benign keydown/keyup nudges React's synthetic event system
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Dead", bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keyup",   { key: "Dead", bubbles: true }));
+  }
 
-  // Helper: does the composer now contain our text?
   const snippet = fullContent.slice(0, 15);
   const hasText = () => (composer.textContent ?? "").includes(snippet);
 
+  // ── Full pointer+focus sequence ──
+  composer.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  await sleep(60);
+  composer.dispatchEvent(new MouseEvent("mouseup",   { bubbles: true, cancelable: true }));
+  composer.dispatchEvent(new MouseEvent("click",     { bubbles: true, cancelable: true }));
+  await sleep(300);
+  composer.focus();
+  await sleep(400);
+
+  log("activeElement after focus:", document.activeElement?.tagName,
+      document.activeElement?.getAttribute("role"),
+      "| isComposer:", document.activeElement === composer);
+
   let injected = false;
 
-  // ── Method A: selectAll then execCommand (forces Lexical to process the full buffer)
+  // ── Method A: selectAll → execCommand('insertText') ──
+  // selectAll first clears placeholder/existing text and places a valid selection.
   if (!injected) {
     log("  Method A: selectAll + execCommand('insertText')...");
     try {
-      document.execCommand("selectAll", false);
+      placeCursorInComposer(composer);
       await sleep(100);
+      document.execCommand("selectAll", false);
+      await sleep(80);
       const ok = document.execCommand("insertText", false, fullContent);
-      await sleep(1000); // ← give Facebook 1 s to register the input
-      if (hasText()) {
-        injected = true;
-        log(`  Method A ✓  execCommand returned ${ok}`);
-      } else {
-        warn(`  Method A: execCommand=${ok} but composer still empty:`, JSON.stringify((composer.textContent ?? "").slice(0, 80)));
-      }
+      firePostInjectionEvents(composer, fullContent);
+      await sleep(1200);
+      if (hasText()) { injected = true; log("  Method A ✓ execCommand returned:", ok); }
+      else warn("  Method A: execCommand =", ok, "but text absent. activeElement:",
+                document.activeElement?.tagName, "| composer text:", JSON.stringify((composer.textContent ?? "").slice(0, 80)));
     } catch (e) { warn("  Method A threw:", e.message); }
   }
 
-  // ── Method B: beforeinput InputEvent (Lexical's native handler)
+  // ── Method B: First char via KeyboardEvent chain to wake Lexical, then execCommand rest ──
+  // Simulating a real keystroke for the first character convinces Lexical it
+  // is in "edit mode", after which execCommand reliably inserts the remainder.
   if (!injected) {
-    log("  Method B: beforeinput InputEvent...");
+    log("  Method B: single keystroke wake-up + execCommand rest...");
     try {
-      composer.dispatchEvent(new InputEvent("beforeinput", {
-        bubbles: true, cancelable: true,
-        inputType: "insertText",
-        data: fullContent,
-      }));
-      await sleep(1000);
-      if (hasText()) {
-        injected = true;
-        log("  Method B ✓");
-      } else {
-        warn("  Method B: event dispatched but text absent:", JSON.stringify((composer.textContent ?? "").slice(0, 80)));
+      composer.focus();
+      await sleep(200);
+      placeCursorInComposer(composer);
+      await sleep(100);
+
+      const first = fullContent[0];
+      composer.dispatchEvent(new KeyboardEvent("keydown",  { key: first, bubbles: true, cancelable: true }));
+      composer.dispatchEvent(new KeyboardEvent("keypress", { key: first, bubbles: true, cancelable: true }));
+      composer.dispatchEvent(new InputEvent("beforeinput",
+        { bubbles: true, cancelable: true, inputType: "insertText", data: first }));
+      document.execCommand("insertText", false, first);
+      composer.dispatchEvent(new InputEvent("input",
+        { bubbles: true, inputType: "insertText", data: first }));
+      composer.dispatchEvent(new KeyboardEvent("keyup",    { key: first, bubbles: true }));
+      await sleep(500);
+      log("  Method B: first char done. Composer so far:", (composer.textContent ?? "").slice(0, 20));
+
+      if (fullContent.length > 1) {
+        const rest = fullContent.slice(1);
+        document.execCommand("insertText", false, rest);
+        firePostInjectionEvents(composer, rest);
       }
+      await sleep(1200);
+      if (hasText()) { injected = true; log("  Method B ✓"); }
+      else warn("  Method B: text still absent:", JSON.stringify((composer.textContent ?? "").slice(0, 100)));
     } catch (e) { warn("  Method B threw:", e.message); }
   }
 
-  // ── Method C: DataTransfer clipboard paste
+  // ── Method C: beforeinput InputEvent (Lexical listens to trusted beforeinput;
+  //             synthetic events have isTrusted=false so this is a soft fallback)
   if (!injected) {
-    log("  Method C: DataTransfer clipboard paste...");
+    log("  Method C: beforeinput InputEvent...");
     try {
+      composer.focus();
+      await sleep(200);
+      placeCursorInComposer(composer);
+      composer.dispatchEvent(new InputEvent("beforeinput",
+        { bubbles: true, cancelable: true, inputType: "insertText", data: fullContent }));
+      firePostInjectionEvents(composer, fullContent);
+      await sleep(1200);
+      if (hasText()) { injected = true; log("  Method C ✓"); }
+      else warn("  Method C failed:", JSON.stringify((composer.textContent ?? "").slice(0, 80)));
+    } catch (e) { warn("  Method C threw:", e.message); }
+  }
+
+  // ── Method D: DataTransfer clipboard paste ──
+  if (!injected) {
+    log("  Method D: DataTransfer clipboard paste...");
+    try {
+      composer.focus();
+      await sleep(200);
       const dt = new DataTransfer();
       dt.setData("text/plain", fullContent);
       composer.dispatchEvent(
         new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })
       );
-      await sleep(1000);
-      if (hasText()) {
-        injected = true;
-        log("  Method C ✓");
-      } else {
-        warn("  Method C: paste sent but text absent:", JSON.stringify((composer.textContent ?? "").slice(0, 80)));
-      }
-    } catch (e) { warn("  Method C threw:", e.message); }
-  }
-
-  // ── Method D: direct DOM write into Lexical's inner <p>
-  if (!injected) {
-    log("  Method D: direct innerHTML into <p> + input event...");
-    try {
-      // Lexical wraps each paragraph in a <p> with data-lexical-text="true"
-      let target = composer.querySelector('[data-lexical-text="true"]')
-                ?? composer.querySelector("p")
-                ?? composer;
-      target.textContent = fullContent;
-      composer.dispatchEvent(new InputEvent("input",  { bubbles: true, inputType: "insertText", data: fullContent }));
+      composer.dispatchEvent(new InputEvent("input",
+        { bubbles: true, inputType: "insertFromPaste", data: fullContent }));
       composer.dispatchEvent(new Event("change", { bubbles: true }));
-      await sleep(1000);
-      if (hasText()) {
-        injected = true;
-        warn("  Method D ✓  (DOM-only — button may still be disabled if Lexical state wasn't updated)");
-      } else {
-        warn("  Method D: text still absent. Composer:", JSON.stringify((composer.textContent ?? "").slice(0, 100)));
-      }
+      await sleep(1200);
+      if (hasText()) { injected = true; log("  Method D ✓"); }
+      else warn("  Method D failed:", JSON.stringify((composer.textContent ?? "").slice(0, 80)));
     } catch (e) { warn("  Method D threw:", e.message); }
   }
 
+  // ── Method E: Direct DOM write into Lexical's <p> paragraph ──
+  // Last resort — puts text in DOM but may not update Lexical's EditorState,
+  // which means the Post button might stay disabled. Still worth trying.
   if (!injected) {
-    err("All 4 injection methods failed.");
+    log("  Method E: direct DOM write into <p> / [data-lexical-text]...");
+    try {
+      const target =
+        composer.querySelector('[data-lexical-text="true"]') ??
+        composer.querySelector("p") ??
+        composer;
+      target.textContent = fullContent;
+      firePostInjectionEvents(composer, fullContent);
+      await sleep(1200);
+      if (hasText()) {
+        injected = true;
+        warn("  Method E ✓ (DOM-only — Post button may stay disabled if Lexical state not updated)");
+      } else {
+        warn("  Method E failed:", JSON.stringify((composer.textContent ?? "").slice(0, 100)));
+      }
+    } catch (e) { warn("  Method E threw:", e.message); }
+  }
+
+  if (!injected) {
+    err("All 5 injection methods failed. Final composer text:", JSON.stringify((composer.textContent ?? "").slice(0, 100)));
     return {
       success: false,
-      error: "All 4 text injection methods failed. Open DevTools on the Facebook tab and filter by [EasyMarketing].",
+      error: "All 5 injection methods failed. See [EasyMarketing] logs in DevTools on the Facebook tab.",
     };
   }
 
-  // Extra pause — give Lexical time to re-render and ENABLE the Post button
-  log("Text injected. Waiting 1.5 s for Lexical to enable the Post button...");
-  await sleep(1500);
+  // Extra wait — let Facebook/Lexical re-render and ENABLE the Post button
+  log("Text injected ✓ — waiting 2 s for Post button to become active...");
+  await sleep(2000);
 
-  // ── STEP 4 — Find and click "פרסם" ───────────────────────────────────────
+  // ── STEP 4 — Find and click "פרסום" ──────────────────────────────────────
 
-  log("STEP 4 — Searching for Post / פרסם button...");
+  log("STEP 4 — Searching for Post / פרסום button...");
 
-  // "פרסום" is the confirmed Hebrew label (imperative form used by Facebook IL).
-  // Keep "פרסם" and "Post" as fallbacks for other locales.
+  // All known label variants — "פרסום" first (confirmed Hebrew IL text)
   const POST_LABELS = ["פרסום", "פרסם", "Post", "שתף", "Share"];
 
-  function logAllDialogButtons(label) {
+  /** Log every button inside the dialog with full detail for debugging. */
+  function dumpDialogButtons(prefix) {
     const dialog = document.querySelector('div[role="dialog"]');
-    if (!dialog) return;
-    const all = [...dialog.querySelectorAll('[role="button"], button')].map((el) => {
-      const r = el.getBoundingClientRect();
-      const bg = window.getComputedStyle(el).backgroundColor;
+    if (!dialog) { log(prefix, "— no dialog found"); return; }
+    const rows = [...dialog.querySelectorAll('[role="button"], button')].map((el) => {
+      const r   = el.getBoundingClientRect();
+      const bg  = window.getComputedStyle(el).backgroundColor;
+      const cls = el.className.slice(0, 60);
       return {
-        text:     (el.textContent ?? "").trim().slice(0, 30),
+        text:     (el.textContent ?? "").trim().slice(0, 40),
         label:    el.getAttribute("aria-label"),
         disabled: el.getAttribute("aria-disabled"),
         size:     `${Math.round(r.width)}×${Math.round(r.height)}`,
         bg,
+        cls,
       };
     });
-    log(`${label} — all buttons in dialog (${all.length}):`, JSON.stringify(all));
+    log(`${prefix} — ${rows.length} button(s):`, JSON.stringify(rows));
   }
 
-  function isBlueBackground(el) {
-    // Facebook's primary (Post) button has a blue background.
-    // We parse the computed background-color and check for a blue-dominant RGB.
+  /** Return true if the element's computed background is Facebook-blue. */
+  function isBlue(el) {
     try {
       const bg = window.getComputedStyle(el).backgroundColor;
-      const m  = bg.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+      const m  = bg.match(/rgb[a]?\((\d+),\s*(\d+),\s*(\d+)/);
       if (!m) return false;
       const [, r, g, b] = m.map(Number);
-      // FB blue range: R<120, G>80, B>180 — covers (24,119,242), (0,132,255), etc.
+      // FB blue shades: (24,119,242), (0,132,255), (8,102,255), etc.
+      // Key property: blue channel dominant, > 180, blue > 2× red
       return b > 180 && b > r * 2;
     } catch { return false; }
   }
@@ -255,61 +317,66 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
     const dialog = document.querySelector('div[role="dialog"]');
     const root   = dialog ?? document;
 
-    // ── Strategy 1: exact aria-label ──
+    // ── S1: Exact aria-label match ──
     for (const label of POST_LABELS) {
       const el =
         root.querySelector(`[aria-label="${label}"][role="button"]`) ||
         root.querySelector(`button[aria-label="${label}"]`);
       if (el) {
-        const dis = el.getAttribute("aria-disabled");
-        log(`Found by aria-label="${label}" — aria-disabled="${dis}"`);
-        if (dis === "true") warn("Button is DISABLED — text injection may not have updated Lexical state.");
+        log(`S1 (exact aria-label="${label}") disabled="${el.getAttribute("aria-disabled")}"`);
         return el;
       }
     }
 
-    // ── Strategy 2: text content (case-insensitive, trims whitespace) ──
+    // ── S1b: Partial aria-label match (language-agnostic) ──
+    for (const el of root.querySelectorAll('[role="button"][aria-label], button[aria-label]')) {
+      const lbl = (el.getAttribute("aria-label") ?? "").toLowerCase();
+      if (POST_LABELS.some((p) => lbl.includes(p.toLowerCase()))) {
+        log(`S1b (partial aria-label "${el.getAttribute("aria-label")}") disabled="${el.getAttribute("aria-disabled")}"`);
+        return el;
+      }
+    }
+
+    // ── S2: Text content — case-insensitive, inside dialog first ──
     for (const el of root.querySelectorAll('[role="button"], button')) {
       const text = (el.textContent ?? "").trim().toLowerCase();
       if (POST_LABELS.map((l) => l.toLowerCase()).includes(text)) {
-        const dis = el.getAttribute("aria-disabled");
-        log(`Found by textContent="${text}" — aria-disabled="${dis}"`);
-        if (dis === "true") warn("Button is DISABLED — text injection may not have updated Lexical state.");
+        log(`S2 (text="${text}") disabled="${el.getAttribute("aria-disabled")}"`);
         return el;
       }
     }
 
-    // ── Strategy 3: blue background (Facebook primary button style) ──
+    // ── S3: Blue background — primary button colour almost never changes ──
     if (dialog) {
       for (const el of dialog.querySelectorAll('[role="button"], button')) {
         const r = el.getBoundingClientRect();
-        if (r.width < 40 || r.height < 24) continue; // skip tiny icon buttons
-        if (isBlueBackground(el)) {
-          const dis = el.getAttribute("aria-disabled");
+        if (r.width < 40 || r.height < 20) continue; // skip icon buttons
+        if (isBlue(el)) {
           const bg  = window.getComputedStyle(el).backgroundColor;
-          log(`Found by blue background: bg="${bg}" text="${(el.textContent ?? "").trim().slice(0, 20)}" aria-disabled="${dis}"`);
-          if (dis === "true") warn("Blue button is DISABLED — text injection may not have updated Lexical state.");
+          const dis = el.getAttribute("aria-disabled");
+          log(`S3 (blue bg="${bg}") text="${(el.textContent ?? "").trim().slice(0, 20)}" disabled="${dis}"`);
+          if (dis === "true") warn("Blue button is DISABLED — text injection did not update Lexical state. Check [EasyMarketing] logs above.");
           return el;
         }
       }
     }
 
-    // ── Strategy 4: bottom-right positional fallback ──
+    // ── S4: Bottom-right positional fallback ──
+    // The Post button is always the bottom-most, right-most action button.
     if (dialog) {
-      const candidates = [...dialog.querySelectorAll('[role="button"]')].filter((el) => {
+      const cands = [...dialog.querySelectorAll('[role="button"]')].filter((el) => {
         const r = el.getBoundingClientRect();
         return r.width >= 30 && r.height >= 20;
       });
-      if (candidates.length > 0) {
-        candidates.sort((a, b) => {
+      if (cands.length) {
+        cands.sort((a, b) => {
           const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
           return rb.bottom - ra.bottom || rb.right - ra.right;
         });
-        const best = candidates[0];
+        const best = cands[0];
         const dis  = best.getAttribute("aria-disabled");
-        const bg   = window.getComputedStyle(best).backgroundColor;
-        log(`Positional fallback → text="${(best.textContent ?? "").trim().slice(0, 20)}" aria-label="${best.getAttribute("aria-label")}" disabled="${dis}" bg="${bg}"`);
-        if (dis === "true") warn("Positional button is DISABLED — text injection may not have updated Lexical state.");
+        log(`S4 (positional) text="${(best.textContent ?? "").trim().slice(0, 20)}" label="${best.getAttribute("aria-label")}" disabled="${dis}"`);
+        if (dis === "true") warn("Positional button is DISABLED — text injection did not update Lexical state.");
         return best;
       }
     }
@@ -319,34 +386,33 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
 
   let postBtn = null;
   for (let attempt = 1; attempt <= 10; attempt++) {
-    logAllDialogButtons(`Attempt ${attempt}/10`);
+    dumpDialogButtons(`Attempt ${attempt}/10`);
     postBtn = findPostButton();
     if (postBtn) break;
-    log(`Post button not found on attempt ${attempt}/10, waiting 800 ms...`);
     await sleep(800);
   }
 
   if (!postBtn) {
-    logAllDialogButtons("FINAL (not found)");
+    dumpDialogButtons("FINAL — button not found");
     return {
       success: false,
-      error: "Post button not found after 10 attempts. Check DevTools on the Facebook tab for [EasyMarketing] logs.",
+      error: "Post button not found after 10 attempts. See full [EasyMarketing] log in Facebook tab DevTools.",
     };
   }
 
-  // Click even if disabled — Facebook sometimes re-enables it on click
-  const disabled = postBtn.getAttribute("aria-disabled");
-  log(`Clicking Post button — aria-disabled="${disabled}" text="${(postBtn.textContent ?? "").trim().slice(0, 20)}"`);
+  const dis = postBtn.getAttribute("aria-disabled");
+  log(`Clicking: label="${postBtn.getAttribute("aria-label")}" text="${(postBtn.textContent ?? "").trim().slice(0, 20)}" disabled="${dis}"`);
   postBtn.click();
 
-  if (disabled === "true") {
-    // Wait a beat and try once more in case a re-render was needed
+  // If the button was disabled (text injection used Method E / DOM-only),
+  // wait a moment and retry — Facebook sometimes re-enables on click.
+  if (dis === "true") {
     await sleep(1500);
-    log("Button was disabled — retrying click after 1.5 s...");
+    log("Was disabled — retrying click after 1.5 s...");
     postBtn.click();
   }
 
   await sleep(5000);
-  log("Post submitted — done.");
+  log("Done — post submitted.");
   return { success: true };
 };
