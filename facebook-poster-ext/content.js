@@ -182,8 +182,11 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
 
   const POST_LABELS = ["פרסום", "פרסם", "Post", "שתף", "Share"];
 
+  // The dialog that owns the composer — avoids picking a Messenger chat dialog.
+  const composerDialog = composer.closest('div[role="dialog"]') ?? null;
+
   function dumpDialogButtons(prefix) {
-    const dialog = document.querySelector('div[role="dialog"]');
+    const dialog = composerDialog ?? document.querySelector('div[role="dialog"]');
     if (!dialog) { log(prefix, "— no dialog found"); return; }
     const rows = [...dialog.querySelectorAll('[role="button"], button')].map((el) => {
       const r  = el.getBoundingClientRect();
@@ -211,7 +214,7 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
   }
 
   function findPostButton() {
-    const dialog = document.querySelector('div[role="dialog"]');
+    const dialog = composerDialog ?? document.querySelector('div[role="dialog"]');
     const root   = dialog ?? document;
 
     // S1: exact aria-label
@@ -261,6 +264,19 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       }
     }
 
+    // S2b: document-wide search for visible elements with matching aria-label (catches any wrappers)
+    for (const label of POST_LABELS) {
+      for (const el of document.querySelectorAll(`[aria-label="${label}"]`)) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          const dis = el.getAttribute("aria-disabled");
+          log(`S2b doc-wide aria-label="${label}" tag=${el.tagName} visible=${r.width}×${r.height} disabled="${dis}"`);
+          if (dis === "true") warn("Button found but DISABLED.");
+          return el;
+        }
+      }
+    }
+
     // S3: blue background — primary button colour rarely changes
     if (dialog) {
       for (const el of dialog.querySelectorAll('[role="button"], button')) {
@@ -276,16 +292,17 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       }
     }
 
-    // S4: bottom-right positional fallback
-    if (dialog) {
-      const cands = [...dialog.querySelectorAll('[role="button"]')].filter((el) => {
+    // S4: bottom-right positional fallback (scoped to composer dialog)
+    const s4Root = composerDialog ?? dialog;
+    if (s4Root) {
+      const cands = [...s4Root.querySelectorAll('[role="button"]')].filter((el) => {
         const r = el.getBoundingClientRect();
         return r.width >= 30 && r.height >= 20;
       });
       if (cands.length) {
         cands.sort((a, b) => {
           const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-          return rb.bottom - ra.bottom || rb.right - ra.right;
+          return (rb.bottom + rb.right) - (ra.bottom + ra.right);
         });
         const best = cands[0];
         const dis  = best.getAttribute("aria-disabled");
