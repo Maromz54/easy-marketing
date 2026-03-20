@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
   Loader2, Send, CalendarClock, Image as ImageIcon,
-  Link2, CheckCircle2, Target, Puzzle, ListChecks, Pencil, X,
+  Link2, CheckCircle2, Target, Puzzle, ListChecks, Pencil, X, Upload,
 } from "lucide-react";
 
 import { createPostAction, updatePostAction } from "@/actions/posts";
+import { createClient } from "@/lib/supabase/client";
+import { PostPreview } from "@/components/dashboard/post-preview";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -101,6 +103,11 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
   const [successCount, setSuccessCount] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  // Image upload state
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const form = useForm<PostFormValues>({
     resolver: zodResolver(postSchema),
     defaultValues: {
@@ -115,10 +122,9 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
     },
   });
 
-  // Prefill form when entering/leaving edit mode
+  // Prefill / clear form on edit mode changes
   useEffect(() => {
     if (editingPost) {
-      // Convert stored UTC scheduled_at to local datetime-local string
       const localScheduledAt = editingPost.scheduled_at
         ? new Date(editingPost.scheduled_at)
             .toLocaleString("sv-SE")
@@ -127,9 +133,7 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
         : "";
 
       form.reset({
-        facebookTokenId: editingPost.facebook_tokens
-          ? (editingPost as unknown as { facebook_token_id: string }).facebook_token_id ?? EXTENSION_SENTINEL
-          : EXTENSION_SENTINEL,
+        facebookTokenId: EXTENSION_SENTINEL,
         distributionListId: DIST_LIST_SENTINEL,
         targetId: (editingPost as unknown as { target_id: string | null }).target_id ?? "",
         content: editingPost.content,
@@ -150,24 +154,65 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
         scheduledAt: "",
       });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    setUploadError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingPost]);
 
-  const publishMode = form.watch("publishMode");
-  const watchedTokenId = form.watch("facebookTokenId");
+  // Watched values
+  const publishMode      = form.watch("publishMode");
+  const watchedTokenId   = form.watch("facebookTokenId");
   const watchedDistListId = form.watch("distributionListId");
-  const contentLength = form.watch("content")?.length ?? 0;
+  const watchedContent   = form.watch("content");
+  const watchedImageUrl  = form.watch("imageUrl");
+  const contentLength    = watchedContent?.length ?? 0;
 
-  const useExtension = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
-  const useDistList = !!watchedDistListId && watchedDistListId !== DIST_LIST_SENTINEL;
-  const selectedList = safeLists.find((l) => l.id === watchedDistListId);
+  const useExtension  = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
+  const useDistList   = !!watchedDistListId && watchedDistListId !== DIST_LIST_SENTINEL;
+  const selectedList  = safeLists.find((l) => l.id === watchedDistListId);
 
   const minDateTime = new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16);
 
+  // ── Image upload ───────────────────────────────────────────────────────────
+  async function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setUploadError(null);
+
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setUploadError("שגיאה: המשתמש אינו מחובר.");
+      setIsUploading(false);
+      return;
+    }
+
+    const ext = file.name.split(".").pop() ?? "jpg";
+    const path = `${user.id}/${Date.now()}.${ext}`;
+
+    const { error } = await supabase.storage
+      .from("post_images")
+      .upload(path, file, { upsert: false });
+
+    if (error) {
+      setUploadError("שגיאה בהעלאת התמונה. אנא נסה שוב.");
+    } else {
+      const { data: urlData } = supabase.storage
+        .from("post_images")
+        .getPublicUrl(path);
+      form.setValue("imageUrl", urlData.publicUrl, { shouldValidate: true });
+    }
+
+    setIsUploading(false);
+    // Reset the file input so the same file can be re-selected if removed
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  // ── Submit ─────────────────────────────────────────────────────────────────
   function onSubmit(values: PostFormValues) {
     setServerError(null);
     startTransition(async () => {
-      // ── Edit mode ─────────────────────────────────────────────────────────
       if (isEditing && editingPost) {
         const result = await updatePostAction({
           postId: editingPost.id,
@@ -186,7 +231,6 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
         return;
       }
 
-      // ── Create mode ───────────────────────────────────────────────────────
       const resolvedTokenId =
         values.facebookTokenId === EXTENSION_SENTINEL
           ? undefined
@@ -219,10 +263,7 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           targetId: values.targetId ?? "",
           publishMode: "now",
         });
-        setTimeout(() => {
-          setIsSuccess(false);
-          setSuccessCount(null);
-        }, 5000);
+        setTimeout(() => { setIsSuccess(false); setSuccessCount(null); }, 5000);
       }
     });
   }
@@ -255,7 +296,7 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
       </CardHeader>
 
       <CardContent>
-        {/* Extension-mode notice */}
+        {/* Notices */}
         {!isEditing && useExtension && !useDistList && (
           <div className="mb-5 flex items-start gap-2.5 rounded-md bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800">
             <Puzzle className="h-4 w-4 shrink-0 mt-0.5" />
@@ -267,7 +308,6 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           </div>
         )}
 
-        {/* Distribution list notice */}
         {!isEditing && useDistList && selectedList && (
           <div className="mb-5 flex items-start gap-2.5 rounded-md bg-purple-50 border border-purple-200 px-4 py-3 text-sm text-purple-800">
             <ListChecks className="h-4 w-4 shrink-0 mt-0.5" />
@@ -278,7 +318,6 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           </div>
         )}
 
-        {/* Success */}
         {isSuccess && (
           <div className="mb-4 flex items-center gap-2 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
@@ -292,305 +331,355 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           </div>
         )}
 
-        {/* Server error */}
         {serverError && (
           <div className="mb-4 rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">
             {serverError}
           </div>
         )}
 
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
+        {/* ── Two-column layout: form + live preview ─────────────────────── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
 
-            {/* ── Row: Page selector + Distribution list (hidden in edit mode) ── */}
-            {!isEditing && (
-              <div className="grid gap-4 sm:grid-cols-2">
-                {/* Page selector */}
-                {safePages.length > 0 && (
-                  <FormField
-                    control={form.control}
-                    name="facebookTokenId"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>ערוץ פרסום</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value={EXTENSION_SENTINEL}>
-                              🧩 פרופיל אישי (באמצעות התוסף)
-                            </SelectItem>
-                            {safePages.map((page) => (
-                              <SelectItem key={page.id} value={page.id}>
-                                📄 {page.page_name ?? `דף ${page.page_id}`}
+          {/* ── Form column ───────────────────────────────────────────────── */}
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
+
+              {/* Page selector + Distribution list (hidden in edit mode) */}
+              {!isEditing && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {safePages.length > 0 && (
+                    <FormField
+                      control={form.control}
+                      name="facebookTokenId"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>ערוץ פרסום</FormLabel>
+                          <Select onValueChange={field.onChange} value={field.value}>
+                            <FormControl>
+                              <SelectTrigger><SelectValue /></SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value={EXTENSION_SENTINEL}>
+                                🧩 פרופיל אישי (באמצעות התוסף)
                               </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <FormDescription className="text-xs">
-                          {useExtension
-                            ? "הפוסט יפורסם דרך תוסף Chrome עם הפרופיל האישי"
-                            : "הפוסט יפורסם דרך Graph API עם אסימון הדף"}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                )}
+                              {safePages.map((page) => (
+                                <SelectItem key={page.id} value={page.id}>
+                                  📄 {page.page_name ?? `דף ${page.page_id}`}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <FormDescription className="text-xs">
+                            {useExtension
+                              ? "יפורסם דרך תוסף Chrome עם הפרופיל האישי"
+                              : "יפורסם דרך Graph API עם אסימון הדף"}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
 
-                {/* Distribution list selector */}
-                {safeLists.length > 0 && (
-                  <FormField
-                    control={form.control}
-                    name="distributionListId"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel className="flex items-center gap-1.5">
-                          <ListChecks className="h-3.5 w-3.5 text-muted-foreground" />
-                          רשימת תפוצה
-                        </FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value={DIST_LIST_SENTINEL}>
-                              פרסום ליעד בודד
-                            </SelectItem>
-                            {safeLists.map((list) => (
-                              <SelectItem key={list.id} value={list.id}>
-                                {list.name} ({list.group_ids.length} קבוצות)
+                  {safeLists.length > 0 && (
+                    <FormField
+                      control={form.control}
+                      name="distributionListId"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="flex items-center gap-1.5">
+                            <ListChecks className="h-3.5 w-3.5 text-muted-foreground" />
+                            רשימת תפוצה
+                          </FormLabel>
+                          <Select onValueChange={field.onChange} value={field.value}>
+                            <FormControl>
+                              <SelectTrigger><SelectValue /></SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value={DIST_LIST_SENTINEL}>
+                                פרסום ליעד בודד
                               </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <FormDescription className="text-xs">
-                          {useDistList
-                            ? `יפורסם ל-${selectedList?.group_ids.length ?? 0} קבוצות עם השהיה`
-                            : "בחר רשימה לפרסום מרובה"}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                )}
-              </div>
-            )}
+                              {safeLists.map((list) => (
+                                <SelectItem key={list.id} value={list.id}>
+                                  {list.name} ({list.group_ids.length} קבוצות)
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <FormDescription className="text-xs">
+                            {useDistList
+                              ? `יפורסם ל-${selectedList?.group_ids.length ?? 0} קבוצות עם השהיה`
+                              : "בחר רשימה לפרסום מרובה"}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
+                </div>
+              )}
 
-            {/* ── Target ID (single-group mode) ─────────────────────────────── */}
-            {!useDistList && (
+              {/* Target ID */}
+              {!useDistList && (
+                <FormField
+                  control={form.control}
+                  name="targetId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="flex items-center gap-1.5">
+                        <Target className="h-3.5 w-3.5 text-muted-foreground" />
+                        מזהה יעד{" "}
+                        <span className="text-muted-foreground font-normal text-xs">
+                          {safePages.length === 0 ? "(נדרש לתוסף)" : "(אופציונלי)"}
+                        </span>
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder="123456789012345"
+                          dir="ltr"
+                          className="text-start font-mono"
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormDescription className="text-xs">
+                        מזהה קבוצת הפייסבוק לפרסום דרך התוסף
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              {useDistList && selectedList && (
+                <div className="rounded-md border border-purple-200 bg-purple-50/50 px-4 py-3 text-sm text-purple-700">
+                  <span className="font-medium">{selectedList.name}</span>
+                  {" — "}
+                  {selectedList.group_ids.slice(0, 3).join(", ")}
+                  {selectedList.group_ids.length > 3 && ` +${selectedList.group_ids.length - 3} נוספות`}
+                </div>
+              )}
+
+              <Separator />
+
+              {/* Post content */}
               <FormField
                 control={form.control}
-                name="targetId"
+                name="content"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel className="flex items-center gap-1.5">
-                      <Target className="h-3.5 w-3.5 text-muted-foreground" />
-                      מזהה יעד{" "}
-                      <span className="text-muted-foreground font-normal text-xs">
-                        {safePages.length === 0 ? "(נדרש לתוסף)" : "(אופציונלי)"}
+                    <div className="flex items-center justify-between">
+                      <FormLabel>תוכן הפוסט</FormLabel>
+                      <span
+                        className={`text-xs tabular-nums ${
+                          contentLength > 60000 ? "text-destructive" : "text-muted-foreground"
+                        }`}
+                      >
+                        {contentLength.toLocaleString("he-IL")} / 63,206
                       </span>
+                    </div>
+                    <FormControl>
+                      <Textarea
+                        placeholder="מה תרצה לשתף היום?"
+                        className="min-h-[140px]"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {/* Image upload */}
+              <FormField
+                control={form.control}
+                name="imageUrl"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="flex items-center gap-1.5 text-muted-foreground font-normal">
+                      <ImageIcon className="h-3.5 w-3.5" />
+                      תמונה (אופציונלי)
+                    </FormLabel>
+
+                    {/* Hidden file input */}
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/gif,image/webp"
+                      className="hidden"
+                      onChange={handleImageSelect}
+                    />
+
+                    {/* Hidden form field value — set programmatically */}
+                    <input type="hidden" {...field} />
+
+                    {field.value ? (
+                      /* Thumbnail + remove */
+                      <div className="flex items-start gap-3">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={field.value}
+                          alt="תצוגה מקדימה"
+                          className="h-20 w-20 rounded-md object-cover border"
+                        />
+                        <div className="flex flex-col gap-1.5">
+                          <p className="text-xs text-muted-foreground truncate max-w-[180px]" dir="ltr">
+                            {field.value.split("/").pop()}
+                          </p>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="text-destructive hover:text-destructive w-fit"
+                            onClick={() => form.setValue("imageUrl", "", { shouldValidate: true })}
+                          >
+                            <X className="h-3.5 w-3.5 ms-1" />
+                            הסר תמונה
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Upload button */
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={isUploading}
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        {isUploading ? (
+                          <Loader2 className="ms-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Upload className="ms-2 h-4 w-4" />
+                        )}
+                        {isUploading ? "מעלה..." : "העלה תמונה"}
+                      </Button>
+                    )}
+
+                    {uploadError && (
+                      <p className="text-xs text-destructive">{uploadError}</p>
+                    )}
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {/* Link URL */}
+              <FormField
+                control={form.control}
+                name="linkUrl"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="flex items-center gap-1.5 text-muted-foreground font-normal">
+                      <Link2 className="h-3.5 w-3.5" />
+                      קישור לפוסט (אופציונלי)
                     </FormLabel>
                     <FormControl>
                       <Input
-                        placeholder="123456789012345"
+                        type="url"
+                        placeholder="https://example.com/my-page"
                         dir="ltr"
-                        className="text-start font-mono"
+                        className="text-start"
                         {...field}
                       />
                     </FormControl>
-                    <FormDescription className="text-xs">
-                      מזהה קבוצת הפייסבוק לפרסום דרך התוסף
-                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
-            )}
 
-            {/* Distribution list summary (replaces targetId when list is selected) */}
-            {useDistList && selectedList && (
-              <div className="rounded-md border border-purple-200 bg-purple-50/50 px-4 py-3 text-sm text-purple-700">
-                <span className="font-medium">{selectedList.name}</span>
-                {" — "}
-                {selectedList.group_ids.slice(0, 3).join(", ")}
-                {selectedList.group_ids.length > 3 && ` +${selectedList.group_ids.length - 3} נוספות`}
-              </div>
-            )}
+              <Separator />
 
-            <Separator />
-
-            {/* ── Post content ──────────────────────────────────────────────── */}
-            <FormField
-              control={form.control}
-              name="content"
-              render={({ field }) => (
-                <FormItem>
-                  <div className="flex items-center justify-between">
-                    <FormLabel>תוכן הפוסט</FormLabel>
-                    <span
-                      className={`text-xs tabular-nums ${
-                        contentLength > 60000 ? "text-destructive" : "text-muted-foreground"
-                      }`}
-                    >
-                      {contentLength.toLocaleString("he-IL")} / 63,206
-                    </span>
-                  </div>
-                  <FormControl>
-                    <Textarea
-                      placeholder="מה תרצה לשתף היום?"
-                      className="min-h-[140px]"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {/* ── Image URL ─────────────────────────────────────────────────── */}
-            <FormField
-              control={form.control}
-              name="imageUrl"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="flex items-center gap-1.5 text-muted-foreground font-normal">
-                    <ImageIcon className="h-3.5 w-3.5" />
-                    כתובת תמונה (אופציונלי)
-                  </FormLabel>
-                  <FormControl>
-                    <Input
-                      type="url"
-                      placeholder="https://example.com/image.jpg"
-                      dir="ltr"
-                      className="text-start"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {/* ── Link URL ──────────────────────────────────────────────────── */}
-            <FormField
-              control={form.control}
-              name="linkUrl"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="flex items-center gap-1.5 text-muted-foreground font-normal">
-                    <Link2 className="h-3.5 w-3.5" />
-                    קישור לפוסט (אופציונלי)
-                  </FormLabel>
-                  <FormControl>
-                    <Input
-                      type="url"
-                      placeholder="https://example.com/my-page"
-                      dir="ltr"
-                      className="text-start"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <Separator />
-
-            {/* ── Publish mode ──────────────────────────────────────────────── */}
-            <FormField
-              control={form.control}
-              name="publishMode"
-              render={({ field }) => (
-                <FormItem className="space-y-3">
-                  <FormLabel>מועד פרסום</FormLabel>
-                  <FormControl>
-                    <RadioGroup
-                      onValueChange={field.onChange}
-                      value={field.value}
-                      className="flex flex-col gap-2 sm:flex-row sm:gap-4"
-                    >
-                      <label
-                        htmlFor="mode-now"
-                        className={`flex items-center gap-2.5 cursor-pointer rounded-lg border px-4 py-3 transition-colors ${
-                          field.value === "now"
-                            ? "border-primary bg-primary/5"
-                            : "border-input hover:border-muted-foreground/40"
-                        }`}
-                      >
-                        <RadioGroupItem value="now" id="mode-now" />
-                        <div>
-                          <p className="text-sm font-medium">פרסם עכשיו</p>
-                          <p className="text-xs text-muted-foreground">
-                            יישמר ויפורסם בדקה הקרובה
-                          </p>
-                        </div>
-                      </label>
-
-                      <label
-                        htmlFor="mode-scheduled"
-                        className={`flex items-center gap-2.5 cursor-pointer rounded-lg border px-4 py-3 transition-colors ${
-                          field.value === "scheduled"
-                            ? "border-primary bg-primary/5"
-                            : "border-input hover:border-muted-foreground/40"
-                        }`}
-                      >
-                        <RadioGroupItem value="scheduled" id="mode-scheduled" />
-                        <div>
-                          <p className="text-sm font-medium">תזמן לעתיד</p>
-                          <p className="text-xs text-muted-foreground">בחר תאריך ושעה</p>
-                        </div>
-                      </label>
-                    </RadioGroup>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {/* ── Date/Time picker ──────────────────────────────────────────── */}
-            {publishMode === "scheduled" && (
+              {/* Publish mode */}
               <FormField
                 control={form.control}
-                name="scheduledAt"
+                name="publishMode"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>תאריך ושעת פרסום</FormLabel>
+                  <FormItem className="space-y-3">
+                    <FormLabel>מועד פרסום</FormLabel>
                     <FormControl>
-                      <Input
-                        type="datetime-local"
-                        dir="ltr"
-                        className="text-start w-full sm:w-auto"
-                        min={minDateTime}
-                        {...field}
-                      />
+                      <RadioGroup
+                        onValueChange={field.onChange}
+                        value={field.value}
+                        className="flex flex-col gap-2 sm:flex-row sm:gap-4"
+                      >
+                        <label
+                          htmlFor="mode-now"
+                          className={`flex items-center gap-2.5 cursor-pointer rounded-lg border px-4 py-3 transition-colors ${
+                            field.value === "now"
+                              ? "border-primary bg-primary/5"
+                              : "border-input hover:border-muted-foreground/40"
+                          }`}
+                        >
+                          <RadioGroupItem value="now" id="mode-now" />
+                          <div>
+                            <p className="text-sm font-medium">פרסם עכשיו</p>
+                            <p className="text-xs text-muted-foreground">יישמר ויפורסם בדקה הקרובה</p>
+                          </div>
+                        </label>
+
+                        <label
+                          htmlFor="mode-scheduled"
+                          className={`flex items-center gap-2.5 cursor-pointer rounded-lg border px-4 py-3 transition-colors ${
+                            field.value === "scheduled"
+                              ? "border-primary bg-primary/5"
+                              : "border-input hover:border-muted-foreground/40"
+                          }`}
+                        >
+                          <RadioGroupItem value="scheduled" id="mode-scheduled" />
+                          <div>
+                            <p className="text-sm font-medium">תזמן לעתיד</p>
+                            <p className="text-xs text-muted-foreground">בחר תאריך ושעה</p>
+                          </div>
+                        </label>
+                      </RadioGroup>
                     </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
               />
-            )}
 
-            {/* ── Submit ────────────────────────────────────────────────────── */}
-            <Button type="submit" className="w-full sm:w-auto" disabled={isPending}>
-              {isPending ? (
-                <><Loader2 className="ms-2 h-4 w-4 animate-spin" />שומר...</>
-              ) : isEditing ? (
-                <><Pencil className="ms-2 h-4 w-4" />שמור שינויים</>
-              ) : publishMode === "now" ? (
-                <><Send className="ms-2 h-4 w-4" />שמור לפרסום</>
-              ) : (
-                <><CalendarClock className="ms-2 h-4 w-4" />תזמן פרסום</>
+              {publishMode === "scheduled" && (
+                <FormField
+                  control={form.control}
+                  name="scheduledAt"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>תאריך ושעת פרסום</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="datetime-local"
+                          dir="ltr"
+                          className="text-start w-full sm:w-auto"
+                          min={minDateTime}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
               )}
-            </Button>
-          </form>
-        </Form>
+
+              {/* Submit */}
+              <Button type="submit" className="w-full sm:w-auto" disabled={isPending || isUploading}>
+                {isPending ? (
+                  <><Loader2 className="ms-2 h-4 w-4 animate-spin" />שומר...</>
+                ) : isEditing ? (
+                  <><Pencil className="ms-2 h-4 w-4" />שמור שינויים</>
+                ) : publishMode === "now" ? (
+                  <><Send className="ms-2 h-4 w-4" />שמור לפרסום</>
+                ) : (
+                  <><CalendarClock className="ms-2 h-4 w-4" />תזמן פרסום</>
+                )}
+              </Button>
+            </form>
+          </Form>
+
+          {/* ── Live preview column ──────────────────────────────────────── */}
+          <div className="lg:sticky lg:top-24">
+            <PostPreview content={watchedContent} imageUrl={watchedImageUrl} />
+          </div>
+
+        </div>
       </CardContent>
     </Card>
   );

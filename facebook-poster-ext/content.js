@@ -176,6 +176,84 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
     log("Text injection confirmed ✓");
   }
 
+  // ── STEP 3b — Image attachment (non-fatal) ────────────────────────────────
+  //
+  // Fetch the image from Supabase Storage (public bucket → CORS allowed),
+  // then inject it via the Facebook file input or a drag-drop fallback.
+  // Any failure here warns and continues — the post still submits text-only.
+
+  if (imageUrl) {
+    log("STEP 3b — Attaching image:", imageUrl);
+    try {
+      const resp = await fetch(imageUrl);
+      if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`);
+      const blob = await resp.blob();
+      const filename = decodeURIComponent(imageUrl.split("/").pop() || "image.jpg");
+      const file = new File([blob], filename, { type: blob.type || "image/jpeg" });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+
+      // S-IMG-1: Hidden file input may already be in the DOM even when invisible
+      let fileInput =
+        document.querySelector('div[role="dialog"] input[type="file"][accept*="image"]') ||
+        document.querySelector('div[role="dialog"] input[type="file"]');
+
+      if (fileInput) {
+        Object.defineProperty(fileInput, "files", { value: dt.files, configurable: true });
+        fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+        fileInput.dispatchEvent(new Event("input",  { bubbles: true }));
+        log("S-IMG-1: file input found and files set ✓");
+      } else {
+        // S-IMG-2: Click the photo/video toolbar button to reveal the file input
+        log("S-IMG-2: file input not in DOM — looking for photo button...");
+        const PHOTO_LABELS = ["תמונה/סרטון", "Photo/video", "Photo", "תמונה", "Add photos/videos"];
+        let photoBtn = null;
+        for (const label of PHOTO_LABELS) {
+          photoBtn = document.querySelector(`[aria-label="${label}"]`);
+          if (photoBtn) break;
+        }
+        if (!photoBtn) {
+          for (const el of document.querySelectorAll('[role="dialog"] [role="button"]')) {
+            const txt = (el.textContent ?? "").trim();
+            if (PHOTO_LABELS.some((l) => txt.includes(l))) { photoBtn = el; break; }
+          }
+        }
+
+        if (photoBtn) {
+          photoBtn.click();
+          log("S-IMG-2: photo button clicked — waiting 1.5 s for file input...");
+          await sleep(1500);
+          fileInput =
+            document.querySelector('input[type="file"][accept*="image"]') ||
+            document.querySelector('input[type="file"]');
+          if (fileInput) {
+            Object.defineProperty(fileInput, "files", { value: dt.files, configurable: true });
+            fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+            fileInput.dispatchEvent(new Event("input",  { bubbles: true }));
+            log("S-IMG-2: file input found after button click ✓");
+          } else {
+            warn("S-IMG-2: file input still not found after photo button click.");
+          }
+        }
+      }
+
+      if (!fileInput) {
+        // S-IMG-3: Drag-and-drop onto the composer dialog
+        log("S-IMG-3: drag-drop fallback on composer dialog...");
+        const dropTarget = composerDialog ?? composer;
+        dropTarget.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }));
+        dropTarget.dispatchEvent(new DragEvent("dragover",  { dataTransfer: dt, bubbles: true }));
+        dropTarget.dispatchEvent(new DragEvent("drop",      { dataTransfer: dt, bubbles: true, cancelable: true }));
+        log("S-IMG-3: drop events dispatched");
+      }
+
+      log("Waiting 3 s for Facebook to process the image...");
+      await sleep(3000);
+    } catch (imgErr) {
+      warn("Image attachment failed (non-fatal) — continuing text-only:", imgErr.message);
+    }
+  }
+
   // ── STEP 4 — Find and click "פרסום" ──────────────────────────────────────
 
   log("STEP 4 — Searching for פרסום / Post button...");
