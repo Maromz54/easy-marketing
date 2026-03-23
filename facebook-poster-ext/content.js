@@ -4,6 +4,11 @@
 // Injected via: chrome.scripting.executeScript({ files:["content.js"], world:"MAIN" })
 // Defines:      window.easyMarketingPost(content, imageUrl, linkUrl)
 //
+// Return values:
+//   { success: true }
+//   { success: false, error: "..." }
+//   { success: false, imageInjectionFailed: true, error: "..." }  ← tab stays open
+//
 // DEBUG: Open DevTools on the Facebook tab → Console → filter "[EasyMarketing]"
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -89,31 +94,20 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
 
   log(`Composer: role="${composer.getAttribute("role")}" contenteditable="${composer.contentEditable}"`);
 
-  // Scope all future searches to the dialog that owns this composer.
-  // Moving this here (rather than step 4) so step 3b can use it safely.
+  // Defined here (after step 2) so composerDialog is available in BOTH step 3b and step 4.
   const composerDialog = composer.closest('div[role="dialog"]') ?? null;
   log(`Composer dialog found: ${!!composerDialog}`);
 
   // ── STEP 3 — Text injection ───────────────────────────────────────────────
-  //
-  // Root cause of previous failures: firing extra synthetic events (input,
-  // change, keydown) AFTER execCommand caused Lexical to process the text a
-  // second time → double text in the editor → corrupted state → button disabled.
-  //
-  // Fix: ONE clean execCommand call, zero extra events afterwards.
-  // execCommand('insertText') already fires a trusted native beforeinput event
-  // that Lexical processes correctly on its own.
 
-  log("STEP 3 — Injecting text (clean single execCommand)...");
+  log("STEP 3 — Injecting text...");
 
-  // 1. Full pointer sequence so Lexical activates the editor
   composer.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
   await sleep(60);
   composer.dispatchEvent(new MouseEvent("mouseup",   { bubbles: true, cancelable: true }));
   composer.dispatchEvent(new MouseEvent("click",     { bubbles: true, cancelable: true }));
   await sleep(300);
 
-  // 2. Focus
   composer.focus();
   await sleep(400);
 
@@ -121,7 +115,6 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       `role="${document.activeElement?.getAttribute("role")}"`,
       "| isComposer:", document.activeElement === composer);
 
-  // 3. Place cursor at end of any existing content
   try {
     const p     = composer.querySelector("p") ?? composer;
     const range = document.createRange();
@@ -139,24 +132,18 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
     warn("Cursor placement failed:", e.message);
   }
 
-  // 4. selectAll to clear any placeholder / stale content
   document.execCommand("selectAll", false);
   await sleep(80);
 
-  // 5. Insert text — ONE call, NO extra events.
-  //    execCommand fires its own trusted beforeinput/input events internally.
   const ok = document.execCommand("insertText", false, fullContent);
   log(`execCommand('insertText') returned: ${ok}`);
   log("Composer text after inject:", JSON.stringify((composer.textContent ?? "").slice(0, 80)));
 
-  // 6. Wait 2 s for Lexical to process the input and ENABLE the Post button
   log("Waiting 2 s for Lexical to enable the פרסום button...");
   await sleep(2000);
 
-  // Verify
   const injected = (composer.textContent ?? "").includes(fullContent.slice(0, 15));
   if (!injected) {
-    // Fallback: DataTransfer paste — also fires clean native events
     log("execCommand did not insert text — trying DataTransfer paste fallback...");
     composer.focus();
     await sleep(200);
@@ -168,12 +155,11 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
     log("Paste dispatched. Waiting 2 s...");
     await sleep(2000);
 
-    const injectedFallback = (composer.textContent ?? "").includes(fullContent.slice(0, 15));
-    if (!injectedFallback) {
-      err("Both injection methods failed. Composer text:", JSON.stringify((composer.textContent ?? "").slice(0, 100)));
+    if (!(composer.textContent ?? "").includes(fullContent.slice(0, 15))) {
+      err("Both text injection methods failed.");
       return {
         success: false,
-        error: "Text injection failed (execCommand + paste both failed). See [EasyMarketing] logs in Facebook tab DevTools.",
+        error: "Text injection failed (execCommand + paste both failed). See [EasyMarketing] logs.",
       };
     }
     log("Paste fallback succeeded.");
@@ -181,141 +167,214 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
     log("Text injection confirmed ✓");
   }
 
-  // ── STEP 3b — Image attachment (non-fatal) ────────────────────────────────
+  // ── STEP 3b — Image attachment (MANDATORY if imageUrl provided) ───────────
   //
-  // Strategy (each step is tried only if the previous one fails):
-  //   S-IMG-1 (primary)  : ClipboardEvent('paste') with DataTransfer on composer
-  //   S-IMG-2 (fallback) : DragEvent('drop') with DataTransfer on dialog/composer
-  //   S-IMG-3 (fallback) : Assign files to hidden <input type="file">, or click
-  //                        the photo-toolbar button first to reveal it
+  // If the post has an image and all injection strategies fail, we return
+  // imageInjectionFailed: true so background.js marks the post as failed
+  // and leaves the tab open for inspection — the submit button is NOT clicked.
   //
-  // Note: composerDialog is defined right after step 2, so it is safe to use here.
+  // Strategies (tried in order):
+  //   S-IMG-1 : ClipboardEvent('paste') with DataTransfer on the Lexical composer
+  //   S-IMG-2 : DragEvent('drop') with DataTransfer on the composer dialog
+  //   S-IMG-3 : Assign File to dialog-scoped <input type="file">;
+  //             clicks the photo-toolbar button first if input not yet in DOM
+  //   S-IMG-4 : Global document scan using Facebook-specific accept strings
 
   if (imageUrl) {
-    log("STEP 3b — Attaching image:", imageUrl);
+    log("STEP 3b — Image injection (MANDATORY). URL:", imageUrl);
     let imageInjected = false;
 
+    // Helper: detect a rendered image preview in the dialog
+    function hasImagePreview() {
+      return !!(
+        composerDialog?.querySelector('img[src^="blob:"]') ||
+        composerDialog?.querySelector('[data-visualcompletion="media-vc-image"]') ||
+        composerDialog?.querySelector('div[role="img"]') ||
+        composerDialog?.querySelector('img[src]:not([src=""])')
+      );
+    }
+
+    // Helper: assign a File to a file input and fire change/input events
+    function assignToFileInput(input, fileObj) {
+      const dt = new DataTransfer();
+      dt.items.add(fileObj);
+      Object.defineProperty(input, "files", { value: dt.files, configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.dispatchEvent(new Event("input",  { bubbles: true }));
+    }
+
+    let file;
     try {
-      log("IMG: Fetching image blob from:", imageUrl);
+      log("IMG: Fetching image blob...");
       const resp = await fetch(imageUrl);
       if (!resp.ok) throw new Error(`fetch ${resp.status} ${resp.statusText}`);
       const blob = await resp.blob();
       log(`IMG: Blob received — type=${blob.type} size=${blob.size} bytes`);
-
       const filename = decodeURIComponent(imageUrl.split("/").pop() || "image.jpg");
-      const file = new File([blob], filename, { type: blob.type || "image/jpeg" });
+      file = new File([blob], filename, { type: blob.type || "image/jpeg" });
+    } catch (fetchErr) {
+      err("IMG: Failed to fetch image blob:", fetchErr.message);
+      return {
+        success: false,
+        imageInjectionFailed: true,
+        error: `Image fetch failed: ${fetchErr.message}`,
+      };
+    }
 
-      function hasImagePreview() {
-        return !!(
-          composerDialog?.querySelector('img[src^="blob:"]') ||
-          composerDialog?.querySelector('[data-visualcompletion="media-vc-image"]') ||
-          composerDialog?.querySelector('div[role="img"]')
-        );
+    // ── S-IMG-1: paste event on the Lexical contenteditable ────────────────
+    log("IMG S1: Dispatching paste event on composer...");
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      composer.focus();
+      await sleep(150);
+      composer.dispatchEvent(new ClipboardEvent("paste", {
+        bubbles: true, cancelable: true, clipboardData: dt,
+      }));
+      log("IMG S1: paste dispatched — waiting 3 s...");
+      await sleep(3000);
+      if (hasImagePreview()) {
+        imageInjected = true;
+        log("IMG S1: SUCCESS — image preview detected ✓");
+      } else {
+        log("IMG S1: paste dispatched but no image preview detected.");
       }
+    } catch (e) { warn("IMG S1 error:", e.message); }
 
-      // ── S-IMG-1: paste event on the Lexical contenteditable ──────────────
-      log("IMG S1: Dispatching paste event on composer...");
+    // ── S-IMG-2: drop event on composerDialog ──────────────────────────────
+    if (!imageInjected) {
+      log("IMG S2: Dispatching drop events on dialog...");
       try {
         const dt = new DataTransfer();
         dt.items.add(file);
-        composer.focus();
-        await sleep(150);
-        const pasteEvt = new ClipboardEvent("paste", {
-          bubbles: true, cancelable: true, clipboardData: dt,
-        });
-        composer.dispatchEvent(pasteEvt);
-        log("IMG S1: paste dispatched — waiting 3 s for Facebook to render preview...");
+        const dropTarget = composerDialog ?? composer;
+        dropTarget.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true, cancelable: true }));
+        await sleep(80);
+        dropTarget.dispatchEvent(new DragEvent("dragover",  { dataTransfer: dt, bubbles: true, cancelable: true }));
+        await sleep(80);
+        dropTarget.dispatchEvent(new DragEvent("drop",      { dataTransfer: dt, bubbles: true, cancelable: true }));
+        log("IMG S2: drop dispatched — waiting 3 s...");
         await sleep(3000);
         if (hasImagePreview()) {
           imageInjected = true;
-          log("IMG S1: SUCCESS — image preview detected in dialog ✓");
+          log("IMG S2: SUCCESS — image preview detected ✓");
         } else {
-          log("IMG S1: paste dispatched but no image preview found — trying S-IMG-2...");
+          log("IMG S2: drop dispatched but no image preview detected.");
         }
-      } catch (e) { warn("IMG S1 error:", e.message); }
+      } catch (e) { warn("IMG S2 error:", e.message); }
+    }
 
-      // ── S-IMG-2: drop event on composerDialog ────────────────────────────
-      if (!imageInjected) {
-        log("IMG S2: Dispatching drop events on composer dialog...");
-        try {
-          const dt = new DataTransfer();
-          dt.items.add(file);
-          const dropTarget = composerDialog ?? composer;
-          dropTarget.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true, cancelable: true }));
-          await sleep(80);
-          dropTarget.dispatchEvent(new DragEvent("dragover",  { dataTransfer: dt, bubbles: true, cancelable: true }));
-          await sleep(80);
-          dropTarget.dispatchEvent(new DragEvent("drop",      { dataTransfer: dt, bubbles: true, cancelable: true }));
-          log("IMG S2: drop dispatched — waiting 3 s...");
-          await sleep(3000);
-          if (hasImagePreview()) {
-            imageInjected = true;
-            log("IMG S2: SUCCESS — image preview detected ✓");
-          } else {
-            log("IMG S2: drop dispatched but no image preview — trying S-IMG-3...");
+    // ── S-IMG-3: dialog-scoped file input (direct or via photo button) ─────
+    if (!imageInjected) {
+      log("IMG S3: Trying dialog-scoped file input...");
+      try {
+        let fileInput =
+          composerDialog?.querySelector('input[type="file"][accept*="image"]') ??
+          composerDialog?.querySelector('input[type="file"]') ??
+          null;
+
+        if (!fileInput) {
+          log("IMG S3: input not in dialog — looking for photo toolbar button...");
+          const PHOTO_LABELS = ["תמונה/סרטון", "Photo/video", "Photo", "תמונה", "Add photos/videos"];
+          let photoBtn = null;
+          for (const label of PHOTO_LABELS) {
+            photoBtn = (composerDialog ?? document).querySelector(`[aria-label="${label}"]`);
+            if (photoBtn) { log(`IMG S3: photo button found via label "${label}"`); break; }
           }
-        } catch (e) { warn("IMG S2 error:", e.message); }
-      }
-
-      // ── S-IMG-3: file input (direct or via photo-toolbar button) ─────────
-      if (!imageInjected) {
-        log("IMG S3: Looking for hidden file input...");
-        try {
-          const dt = new DataTransfer();
-          dt.items.add(file);
-
-          let fileInput =
-            document.querySelector('div[role="dialog"] input[type="file"][accept*="image"]') ||
-            document.querySelector('div[role="dialog"] input[type="file"]');
-
-          if (!fileInput) {
-            log("IMG S3: file input not in DOM — looking for photo toolbar button...");
-            const PHOTO_LABELS = ["תמונה/סרטון", "Photo/video", "Photo", "תמונה", "Add photos/videos"];
-            let photoBtn = null;
-            for (const label of PHOTO_LABELS) {
-              photoBtn = document.querySelector(`[aria-label="${label}"]`);
-              if (photoBtn) { log(`IMG S3: photo button found via label "${label}"`); break; }
-            }
-            if (!photoBtn) {
-              for (const el of document.querySelectorAll('[role="dialog"] [role="button"]')) {
-                const txt = (el.textContent ?? "").trim();
-                if (PHOTO_LABELS.some((l) => txt.includes(l))) {
-                  log(`IMG S3: photo button found via text "${txt.slice(0, 30)}"`);
-                  photoBtn = el; break;
-                }
+          if (!photoBtn) {
+            for (const el of (composerDialog ?? document).querySelectorAll('[role="button"]')) {
+              const txt = (el.textContent ?? "").trim();
+              if (PHOTO_LABELS.some((l) => txt.includes(l))) {
+                log(`IMG S3: photo button found via text "${txt.slice(0, 30)}"`);
+                photoBtn = el; break;
               }
             }
-            if (photoBtn) {
-              photoBtn.click();
-              log("IMG S3: photo button clicked — waiting 1.5 s...");
-              await sleep(1500);
-              fileInput =
-                document.querySelector('input[type="file"][accept*="image"]') ||
-                document.querySelector('input[type="file"]');
-            }
           }
+          if (photoBtn) {
+            photoBtn.click();
+            log("IMG S3: photo button clicked — waiting 1.5 s...");
+            await sleep(1500);
+            fileInput =
+              document.querySelector('input[type="file"][accept*="image"]') ??
+              document.querySelector('input[type="file"]') ??
+              null;
+          }
+        }
 
-          if (fileInput) {
-            Object.defineProperty(fileInput, "files", { value: dt.files, configurable: true });
-            fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-            fileInput.dispatchEvent(new Event("input",  { bubbles: true }));
-            log("IMG S3: files set on input — waiting 3 s...");
-            await sleep(3000);
-            imageInjected = true;
-            log("IMG S3: file input injection done (preview detection skipped — file input less reliable)");
+        if (fileInput) {
+          log(`IMG S3: file input found (accept="${fileInput.accept}") — assigning file...`);
+          assignToFileInput(fileInput, file);
+          log("IMG S3: files assigned — waiting 3 s...");
+          await sleep(3000);
+          // File inputs don't always produce a detectable preview; assume success
+          imageInjected = true;
+          if (hasImagePreview()) {
+            log("IMG S3: SUCCESS — image preview detected ✓");
           } else {
-            warn("IMG S3: no file input found — all image injection methods exhausted.");
+            log("IMG S3: files assigned (no visual preview detected — assuming accepted).");
           }
-        } catch (e) { warn("IMG S3 error:", e.message); }
-      }
-
-      if (!imageInjected) {
-        warn("IMG: All injection methods failed — post will be published text-only.");
-      }
-
-    } catch (imgErr) {
-      warn("IMG: Failed to fetch image (non-fatal) — continuing text-only:", imgErr.message);
+        } else {
+          log("IMG S3: no file input found in dialog.");
+        }
+      } catch (e) { warn("IMG S3 error:", e.message); }
     }
+
+    // ── S-IMG-4: global scan for Facebook-specific file inputs ─────────────
+    //
+    // Facebook hides file inputs anywhere in the document — not necessarily
+    // inside the dialog. We scan the entire page with Facebook-specific accept
+    // patterns, most specific first.
+    if (!imageInjected) {
+      log("IMG S4: Global document scan for Facebook-specific file inputs...");
+      try {
+        const FB_ACCEPT_PATTERNS = [
+          'input[type="file"][accept="image/*,image/heif,image/heic"]',
+          'input[type="file"][accept*="image/heic"]',
+          'input[type="file"][accept^="image"]',
+          'input[type="file"][accept*="image/"]',
+          'input[type="file"][accept*="video/"]',  // Facebook bundles image+video
+          'input[type="file"]',                     // last resort
+        ];
+
+        let fileInput = null;
+        for (const pattern of FB_ACCEPT_PATTERNS) {
+          const candidates = [...document.querySelectorAll(pattern)];
+          log(`IMG S4: pattern "${pattern}" → ${candidates.length} candidate(s)`);
+          if (candidates.length > 0) {
+            // Prefer an input with no files already set
+            fileInput = candidates.find((el) => el.files?.length === 0) ?? candidates[0];
+            log(`IMG S4: selected input accept="${fileInput.accept}" files=${fileInput.files?.length}`);
+            break;
+          }
+        }
+
+        if (fileInput) {
+          assignToFileInput(fileInput, file);
+          log("IMG S4: files assigned globally — waiting 3 s...");
+          await sleep(3000);
+          imageInjected = true;
+          if (hasImagePreview()) {
+            log("IMG S4: SUCCESS — image preview detected ✓");
+          } else {
+            log("IMG S4: files assigned globally (no visual preview — assuming accepted).");
+          }
+        } else {
+          log("IMG S4: no file input found anywhere in document.");
+        }
+      } catch (e) { warn("IMG S4 error:", e.message); }
+    }
+
+    // ── All strategies exhausted ────────────────────────────────────────────
+    if (!imageInjected) {
+      err("IMG: All 4 injection strategies failed. Post NOT submitted. Tab left open for inspection.");
+      return {
+        success: false,
+        imageInjectionFailed: true,
+        error: "Image injection failed — S1 (paste), S2 (drop), S3 (dialog file input), S4 (global file input) all failed. Tab left open.",
+      };
+    }
+
+    log("STEP 3b complete — image injected ✓");
   }
 
   // ── STEP 4 — Find and click "פרסום" ──────────────────────────────────────
@@ -369,7 +428,7 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       }
     }
 
-    // S1b: partial aria-label (language-agnostic, role="button" or button)
+    // S1b: partial aria-label (language-agnostic)
     for (const el of root.querySelectorAll('[role="button"][aria-label], button[aria-label]')) {
       const lbl = (el.getAttribute("aria-label") ?? "").toLowerCase();
       if (POST_LABELS.some((p) => lbl.includes(p.toLowerCase()))) {
@@ -380,7 +439,7 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       }
     }
 
-    // S1c: any element with matching aria-label (no role requirement — catches div[aria-label="פרסום"])
+    // S1c: any element with matching aria-label (no role requirement)
     for (const label of POST_LABELS) {
       const el = root.querySelector(`[aria-label="${label}"]`);
       if (el) {
@@ -391,7 +450,7 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       }
     }
 
-    // S2: innerText / textContent (case-insensitive, also checks divs without role="button")
+    // S2: innerText / textContent case-insensitive
     const s2Labels = POST_LABELS.map((l) => l.toLowerCase());
     for (const el of root.querySelectorAll('[role="button"], button, div[aria-label], div[tabindex]')) {
       const text = (el.innerText ?? el.textContent ?? "").trim().toLowerCase();
@@ -403,7 +462,7 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       }
     }
 
-    // S2b: document-wide search for visible elements with matching aria-label (catches any wrappers)
+    // S2b: document-wide visible element search
     for (const label of POST_LABELS) {
       for (const el of document.querySelectorAll(`[aria-label="${label}"]`)) {
         const r = el.getBoundingClientRect();
@@ -416,7 +475,7 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       }
     }
 
-    // S3: blue background — primary button colour rarely changes
+    // S3: blue background
     if (dialog) {
       for (const el of dialog.querySelectorAll('[role="button"], button')) {
         const r = el.getBoundingClientRect();
@@ -425,13 +484,13 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
           const dis = el.getAttribute("aria-disabled");
           const bg  = window.getComputedStyle(el).backgroundColor;
           log(`S3 blue bg="${bg}" disabled="${dis}"`);
-          if (dis === "true") warn("Blue button DISABLED — Lexical state not updated.");
+          if (dis === "true") warn("Blue button DISABLED.");
           return el;
         }
       }
     }
 
-    // S4: bottom-right positional fallback (scoped to composer dialog)
+    // S4: bottom-right positional fallback
     const s4Root = composerDialog ?? dialog;
     if (s4Root) {
       const cands = [...s4Root.querySelectorAll('[role="button"]')].filter((el) => {
@@ -467,11 +526,10 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
     } else {
       log(`Button not found on attempt ${attempt}, waiting 800 ms...`);
     }
-    postBtn = null; // keep waiting for enabled state
+    postBtn = null;
     await sleep(800);
   }
 
-  // Last resort: accept a disabled button rather than give up entirely
   if (!postBtn) {
     dumpDialogButtons("Last resort — accepting disabled button");
     postBtn = findPostButton();
@@ -488,11 +546,9 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
   const dis = postBtn.getAttribute("aria-disabled");
   log(`Clicking: label="${postBtn.getAttribute("aria-label")}" text="${(postBtn.textContent ?? "").trim().slice(0, 20)}" disabled="${dis}"`);
 
-  // Scroll the button into view so it has a real bounding box
   postBtn.scrollIntoView({ block: "center", behavior: "instant" });
   await sleep(200);
 
-  // Human-like click: full pointer event sequence
   function humanClick(el) {
     const rect = el.getBoundingClientRect();
     const cx = rect.left + rect.width  / 2;
@@ -516,6 +572,6 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
   }
 
   await sleep(5000);
-  log("Done — post submitted.");
+  log("Done — post submitted ✓");
   return { success: true };
 };

@@ -136,6 +136,12 @@ async function checkAndPost() {
     console.log("[EasyMarketing] Post published successfully:", post.id);
     chrome.tabs.remove(tab.id).catch(() => {});
     await markPost(apiBaseUrl, extensionSecret, post.id, "published");
+  } else if (scriptResult?.imageInjectionFailed) {
+    const errMsg = scriptResult?.error ?? "Image injection failed";
+    console.error("[EasyMarketing] Image injection failed — tab LEFT OPEN for inspection:", errMsg);
+    console.error("[EasyMarketing] Open DevTools on the Facebook tab and filter [EasyMarketing] to see which strategy (S1–S4) ran.");
+    // Tab intentionally NOT closed — user needs to inspect the dialog.
+    await markPost(apiBaseUrl, extensionSecret, post.id, "failed", errMsg);
   } else {
     const errMsg = scriptResult?.error ?? "Unknown error in content script";
     console.error("[EasyMarketing] Posting failed — tab left open for inspection:", errMsg);
