@@ -89,6 +89,11 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
 
   log(`Composer: role="${composer.getAttribute("role")}" contenteditable="${composer.contentEditable}"`);
 
+  // Scope all future searches to the dialog that owns this composer.
+  // Moving this here (rather than step 4) so step 3b can use it safely.
+  const composerDialog = composer.closest('div[role="dialog"]') ?? null;
+  log(`Composer dialog found: ${!!composerDialog}`);
+
   // ── STEP 3 — Text injection ───────────────────────────────────────────────
   //
   // Root cause of previous failures: firing extra synthetic events (input,
@@ -178,79 +183,138 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
 
   // ── STEP 3b — Image attachment (non-fatal) ────────────────────────────────
   //
-  // Fetch the image from Supabase Storage (public bucket → CORS allowed),
-  // then inject it via the Facebook file input or a drag-drop fallback.
-  // Any failure here warns and continues — the post still submits text-only.
+  // Strategy (each step is tried only if the previous one fails):
+  //   S-IMG-1 (primary)  : ClipboardEvent('paste') with DataTransfer on composer
+  //   S-IMG-2 (fallback) : DragEvent('drop') with DataTransfer on dialog/composer
+  //   S-IMG-3 (fallback) : Assign files to hidden <input type="file">, or click
+  //                        the photo-toolbar button first to reveal it
+  //
+  // Note: composerDialog is defined right after step 2, so it is safe to use here.
 
   if (imageUrl) {
     log("STEP 3b — Attaching image:", imageUrl);
+    let imageInjected = false;
+
     try {
+      log("IMG: Fetching image blob from:", imageUrl);
       const resp = await fetch(imageUrl);
-      if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`);
+      if (!resp.ok) throw new Error(`fetch ${resp.status} ${resp.statusText}`);
       const blob = await resp.blob();
+      log(`IMG: Blob received — type=${blob.type} size=${blob.size} bytes`);
+
       const filename = decodeURIComponent(imageUrl.split("/").pop() || "image.jpg");
       const file = new File([blob], filename, { type: blob.type || "image/jpeg" });
-      const dt = new DataTransfer();
-      dt.items.add(file);
 
-      // S-IMG-1: Hidden file input may already be in the DOM even when invisible
-      let fileInput =
-        document.querySelector('div[role="dialog"] input[type="file"][accept*="image"]') ||
-        document.querySelector('div[role="dialog"] input[type="file"]');
+      function hasImagePreview() {
+        return !!(
+          composerDialog?.querySelector('img[src^="blob:"]') ||
+          composerDialog?.querySelector('[data-visualcompletion="media-vc-image"]') ||
+          composerDialog?.querySelector('div[role="img"]')
+        );
+      }
 
-      if (fileInput) {
-        Object.defineProperty(fileInput, "files", { value: dt.files, configurable: true });
-        fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-        fileInput.dispatchEvent(new Event("input",  { bubbles: true }));
-        log("S-IMG-1: file input found and files set ✓");
-      } else {
-        // S-IMG-2: Click the photo/video toolbar button to reveal the file input
-        log("S-IMG-2: file input not in DOM — looking for photo button...");
-        const PHOTO_LABELS = ["תמונה/סרטון", "Photo/video", "Photo", "תמונה", "Add photos/videos"];
-        let photoBtn = null;
-        for (const label of PHOTO_LABELS) {
-          photoBtn = document.querySelector(`[aria-label="${label}"]`);
-          if (photoBtn) break;
+      // ── S-IMG-1: paste event on the Lexical contenteditable ──────────────
+      log("IMG S1: Dispatching paste event on composer...");
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        composer.focus();
+        await sleep(150);
+        const pasteEvt = new ClipboardEvent("paste", {
+          bubbles: true, cancelable: true, clipboardData: dt,
+        });
+        composer.dispatchEvent(pasteEvt);
+        log("IMG S1: paste dispatched — waiting 3 s for Facebook to render preview...");
+        await sleep(3000);
+        if (hasImagePreview()) {
+          imageInjected = true;
+          log("IMG S1: SUCCESS — image preview detected in dialog ✓");
+        } else {
+          log("IMG S1: paste dispatched but no image preview found — trying S-IMG-2...");
         }
-        if (!photoBtn) {
-          for (const el of document.querySelectorAll('[role="dialog"] [role="button"]')) {
-            const txt = (el.textContent ?? "").trim();
-            if (PHOTO_LABELS.some((l) => txt.includes(l))) { photoBtn = el; break; }
+      } catch (e) { warn("IMG S1 error:", e.message); }
+
+      // ── S-IMG-2: drop event on composerDialog ────────────────────────────
+      if (!imageInjected) {
+        log("IMG S2: Dispatching drop events on composer dialog...");
+        try {
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          const dropTarget = composerDialog ?? composer;
+          dropTarget.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true, cancelable: true }));
+          await sleep(80);
+          dropTarget.dispatchEvent(new DragEvent("dragover",  { dataTransfer: dt, bubbles: true, cancelable: true }));
+          await sleep(80);
+          dropTarget.dispatchEvent(new DragEvent("drop",      { dataTransfer: dt, bubbles: true, cancelable: true }));
+          log("IMG S2: drop dispatched — waiting 3 s...");
+          await sleep(3000);
+          if (hasImagePreview()) {
+            imageInjected = true;
+            log("IMG S2: SUCCESS — image preview detected ✓");
+          } else {
+            log("IMG S2: drop dispatched but no image preview — trying S-IMG-3...");
           }
-        }
+        } catch (e) { warn("IMG S2 error:", e.message); }
+      }
 
-        if (photoBtn) {
-          photoBtn.click();
-          log("S-IMG-2: photo button clicked — waiting 1.5 s for file input...");
-          await sleep(1500);
-          fileInput =
-            document.querySelector('input[type="file"][accept*="image"]') ||
-            document.querySelector('input[type="file"]');
+      // ── S-IMG-3: file input (direct or via photo-toolbar button) ─────────
+      if (!imageInjected) {
+        log("IMG S3: Looking for hidden file input...");
+        try {
+          const dt = new DataTransfer();
+          dt.items.add(file);
+
+          let fileInput =
+            document.querySelector('div[role="dialog"] input[type="file"][accept*="image"]') ||
+            document.querySelector('div[role="dialog"] input[type="file"]');
+
+          if (!fileInput) {
+            log("IMG S3: file input not in DOM — looking for photo toolbar button...");
+            const PHOTO_LABELS = ["תמונה/סרטון", "Photo/video", "Photo", "תמונה", "Add photos/videos"];
+            let photoBtn = null;
+            for (const label of PHOTO_LABELS) {
+              photoBtn = document.querySelector(`[aria-label="${label}"]`);
+              if (photoBtn) { log(`IMG S3: photo button found via label "${label}"`); break; }
+            }
+            if (!photoBtn) {
+              for (const el of document.querySelectorAll('[role="dialog"] [role="button"]')) {
+                const txt = (el.textContent ?? "").trim();
+                if (PHOTO_LABELS.some((l) => txt.includes(l))) {
+                  log(`IMG S3: photo button found via text "${txt.slice(0, 30)}"`);
+                  photoBtn = el; break;
+                }
+              }
+            }
+            if (photoBtn) {
+              photoBtn.click();
+              log("IMG S3: photo button clicked — waiting 1.5 s...");
+              await sleep(1500);
+              fileInput =
+                document.querySelector('input[type="file"][accept*="image"]') ||
+                document.querySelector('input[type="file"]');
+            }
+          }
+
           if (fileInput) {
             Object.defineProperty(fileInput, "files", { value: dt.files, configurable: true });
             fileInput.dispatchEvent(new Event("change", { bubbles: true }));
             fileInput.dispatchEvent(new Event("input",  { bubbles: true }));
-            log("S-IMG-2: file input found after button click ✓");
+            log("IMG S3: files set on input — waiting 3 s...");
+            await sleep(3000);
+            imageInjected = true;
+            log("IMG S3: file input injection done (preview detection skipped — file input less reliable)");
           } else {
-            warn("S-IMG-2: file input still not found after photo button click.");
+            warn("IMG S3: no file input found — all image injection methods exhausted.");
           }
-        }
+        } catch (e) { warn("IMG S3 error:", e.message); }
       }
 
-      if (!fileInput) {
-        // S-IMG-3: Drag-and-drop onto the composer dialog
-        log("S-IMG-3: drag-drop fallback on composer dialog...");
-        const dropTarget = composerDialog ?? composer;
-        dropTarget.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }));
-        dropTarget.dispatchEvent(new DragEvent("dragover",  { dataTransfer: dt, bubbles: true }));
-        dropTarget.dispatchEvent(new DragEvent("drop",      { dataTransfer: dt, bubbles: true, cancelable: true }));
-        log("S-IMG-3: drop events dispatched");
+      if (!imageInjected) {
+        warn("IMG: All injection methods failed — post will be published text-only.");
       }
 
-      log("Waiting 3 s for Facebook to process the image...");
-      await sleep(3000);
     } catch (imgErr) {
-      warn("Image attachment failed (non-fatal) — continuing text-only:", imgErr.message);
+      warn("IMG: Failed to fetch image (non-fatal) — continuing text-only:", imgErr.message);
     }
   }
 
@@ -259,9 +323,6 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
   log("STEP 4 — Searching for פרסום / Post button...");
 
   const POST_LABELS = ["פרסום", "פרסם", "Post", "שתף", "Share"];
-
-  // The dialog that owns the composer — avoids picking a Messenger chat dialog.
-  const composerDialog = composer.closest('div[role="dialog"]') ?? null;
 
   function dumpDialogButtons(prefix) {
     const dialog = composerDialog ?? document.querySelector('div[role="dialog"]');

@@ -196,7 +196,8 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
       .upload(path, file, { upsert: false });
 
     if (error) {
-      setUploadError("שגיאה בהעלאת התמונה. אנא נסה שוב.");
+      console.error("[PostComposer] Storage upload error:", error);
+      setUploadError(`שגיאה בהעלאת התמונה: ${error.message}`);
     } else {
       const { data: urlData } = supabase.storage
         .from("post_images")
@@ -221,7 +222,9 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           imageUrl: values.imageUrl || undefined,
           linkUrl: values.linkUrl || undefined,
           publishMode: values.publishMode,
-          scheduledAt: values.scheduledAt || undefined,
+          // datetime-local gives a local-time string with no timezone (e.g. "2026-03-23T15:00").
+          // Convert to UTC ISO so Postgres stores the correct moment in time.
+          scheduledAt: values.scheduledAt ? new Date(values.scheduledAt).toISOString() : undefined,
         });
         if (result.error) {
           setServerError(result.error);
@@ -249,7 +252,7 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
         imageUrl: values.imageUrl || undefined,
         linkUrl: values.linkUrl || undefined,
         publishMode: values.publishMode,
-        scheduledAt: values.scheduledAt || undefined,
+        scheduledAt: values.scheduledAt ? new Date(values.scheduledAt).toISOString() : undefined,
       });
 
       if (result.error) {

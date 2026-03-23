@@ -10,7 +10,10 @@ VALUES (
   5242880,  -- 5 MB per file
   ARRAY['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE
+  SET public             = true,
+      file_size_limit    = 5242880,
+      allowed_mime_types = ARRAY['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 -- Authenticated users may upload only into their own folder ({user_id}/*)
 CREATE POLICY "Users can upload own images"
