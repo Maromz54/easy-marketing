@@ -45,9 +45,9 @@ const postSchema = z
   .object({
     facebookTokenId: z.string().optional(),
     // Multi-distribution: array of selected list IDs
-    distributionListIds: z.array(z.string()).default([]),
+    distributionListIds: z.array(z.string()),
     // Manually entered group IDs (comma-separated string)
-    extraGroupIds: z.string().default(""),
+    extraGroupIds: z.string(),
     // Single-target fallback (shown when no distribution lists selected)
     targetId: z
       .string()
@@ -60,7 +60,7 @@ const postSchema = z
       .min(1, { message: "תוכן הפוסט הוא חובה." })
       .max(63206, { message: "הפוסט ארוך מדי (מקסימום 63,206 תווים)." }),
     // Multiple image URLs (managed by upload widget, not validated individually here)
-    imageUrls: z.array(z.string()).default([]),
+    imageUrls: z.array(z.string()),
     linkUrl: z
       .string()
       .optional()
@@ -70,9 +70,9 @@ const postSchema = z
     publishMode: z.enum(["now", "scheduled"]),
     scheduledAt: z.string().optional(),
     // Recurrence: "none" | "weekly" | "monthly"
-    recurrenceType: z.enum(["none", "weekly", "monthly"]).default("none"),
+    recurrenceType: z.enum(["none", "weekly", "monthly"]),
     // Selected weekdays (0=Sun … 6=Sat) when recurrenceType === "weekly"
-    recurrenceDays: z.array(z.number()).default([]),
+    recurrenceDays: z.array(z.number()),
   })
   .superRefine((data, ctx) => {
     if (data.publishMode === "scheduled") {
