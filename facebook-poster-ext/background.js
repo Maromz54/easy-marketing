@@ -99,6 +99,21 @@ async function checkAndPost() {
   // Background tabs render slower, so we give it more time.
   await sleep(5000);
 
+  // 5a-pre. Pre-fetch image in the background service worker.
+  //   Facebook's CSP blocks content scripts from fetching external URLs directly.
+  //   The service worker has no CSP restrictions, so we fetch here and pass the
+  //   result as a base64 data URI to the content script as a 4th argument.
+  let imageDataUri = null;
+  if (post.image_url) {
+    console.log("[EasyMarketing] Pre-fetching image (CSP bypass):", post.image_url);
+    imageDataUri = await fetchImageAsDataUri(post.image_url);
+    if (imageDataUri) {
+      console.log("[EasyMarketing] Image pre-fetched ✓ size:", Math.round(imageDataUri.length / 1024), "KB");
+    } else {
+      console.warn("[EasyMarketing] Image pre-fetch failed — content script will attempt direct fetch as fallback.");
+    }
+  }
+
   // 5a. Inject content.js into the page (defines window.easyMarketingPost).
   //     world: "MAIN" lets it share the page's window/React state with Lexical.
   try {
@@ -120,8 +135,9 @@ async function checkAndPost() {
     execResult = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: "MAIN",
-      func: (c, i, l) => window.easyMarketingPost(c, i, l),
-      args: [post.content, post.image_url ?? null, post.link_url ?? null],
+      func: (c, i, l, d) => window.easyMarketingPost(c, i, l, d),
+      // 4th arg: base64 data URI pre-fetched by the service worker (null if fetch failed).
+      args: [post.content, post.image_url ?? null, post.link_url ?? null, imageDataUri],
     });
   } catch (err) {
     chrome.tabs.remove(tab.id).catch(() => {});
@@ -173,6 +189,32 @@ function waitForTabLoad(tabId, timeoutMs) {
 
     chrome.tabs.onUpdated.addListener(listener);
   });
+}
+
+// Fetch a URL and return a base64 data URI string (e.g. "data:image/jpeg;base64,...")
+// Runs in the service worker — no page CSP applies here.
+// Returns null on any error so callers can fall back gracefully.
+async function fetchImageAsDataUri(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.error("[EasyMarketing] fetchImageAsDataUri: HTTP", response.status, url);
+      return null;
+    }
+    const blob = await response.blob();
+    const mimeType = blob.type || "image/jpeg";
+    const arrayBuffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    // Build base64 in chunks to avoid stack overflow on large images
+    let binary = "";
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return `data:${mimeType};base64,${btoa(binary)}`;
+  } catch (e) {
+    console.error("[EasyMarketing] fetchImageAsDataUri error:", e.message);
+    return null;
+  }
 }
 
 async function markPost(apiBaseUrl, extensionSecret, postId, status, error) {

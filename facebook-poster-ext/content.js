@@ -12,7 +12,7 @@
 // DEBUG: Open DevTools on the Facebook tab → Console → filter "[EasyMarketing]"
 // ─────────────────────────────────────────────────────────────────────────────
 
-window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
+window.easyMarketingPost = async function (content, imageUrl, linkUrl, imageDataUri) {
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const log   = (...a) => console.log("[EasyMarketing]",  ...a);
@@ -203,21 +203,42 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl) {
       input.dispatchEvent(new Event("input",  { bubbles: true }));
     }
 
+    // ── Acquire image data ────────────────────────────────────────────────
+    // The background service worker pre-fetched the image and passed it as a
+    // base64 data URI (4th arg) to avoid Facebook's CSP blocking fetch().
+    // If the pre-fetch failed, we fall back to a direct fetch here — which may
+    // also be blocked by CSP, but at least we log clearly what happened.
+
     let file;
     try {
-      log("IMG: Fetching image blob...");
-      const resp = await fetch(imageUrl);
-      if (!resp.ok) throw new Error(`fetch ${resp.status} ${resp.statusText}`);
-      const blob = await resp.blob();
-      log(`IMG: Blob received — type=${blob.type} size=${blob.size} bytes`);
       const filename = decodeURIComponent(imageUrl.split("/").pop() || "image.jpg");
-      file = new File([blob], filename, { type: blob.type || "image/jpeg" });
+
+      if (imageDataUri) {
+        log("IMG: Decoding pre-fetched data URI from background (CSP bypass) ✓");
+        const [header, base64Data] = imageDataUri.split(",");
+        const mimeType = header.match(/data:([^;]+)/)?.[1] ?? "image/jpeg";
+        const binaryStr = atob(base64Data);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: mimeType });
+        file = new File([blob], filename, { type: mimeType });
+        log(`IMG: File created — name="${filename}" type=${file.type} size=${file.size} bytes`);
+      } else {
+        log("IMG: No pre-fetched data — attempting direct fetch (may be blocked by CSP)...");
+        const resp = await fetch(imageUrl);
+        if (!resp.ok) throw new Error(`fetch ${resp.status} ${resp.statusText}`);
+        const blob = await resp.blob();
+        log(`IMG: Direct fetch succeeded — type=${blob.type} size=${blob.size} bytes`);
+        file = new File([blob], filename, { type: blob.type || "image/jpeg" });
+      }
     } catch (fetchErr) {
-      err("IMG: Failed to fetch image blob:", fetchErr.message);
+      err("IMG: Failed to acquire image data:", fetchErr.message);
       return {
         success: false,
         imageInjectionFailed: true,
-        error: `Image fetch failed: ${fetchErr.message}`,
+        error: `Image data acquisition failed: ${fetchErr.message}`,
       };
     }
 
