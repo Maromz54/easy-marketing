@@ -7,21 +7,25 @@ import { publishToPage } from "@/lib/facebook";
 export interface CreatePostInput {
   /** When omitted the post is queued for the Chrome Extension (no Graph API call). */
   facebookTokenId?: string;
-  /** Group ID or alternate Page ID. Required for extension-only posts. */
+  /** Single group/page ID — used when no distribution lists are selected. */
   targetId?: string;
-  /** When set, ignore targetId and fan out to every group in the distribution list. */
-  distributionListId?: string;
+  /** One or more distribution list IDs whose group_ids will be merged and fanned out. */
+  distributionListIds?: string[];
+  /** Additional group IDs entered manually (comma-separated, already split by the caller). */
+  extraGroupIds?: string[];
   content: string;
-  imageUrl?: string;
+  imageUrls?: string[];
   linkUrl?: string;
   publishMode: "now" | "scheduled";
   scheduledAt?: string;
+  /** Recurrence rule: "weekly:0,1,5" or "monthly". Null / omitted = one-time. */
+  recurrenceRule?: string;
 }
 
 export interface CreatePostResult {
   success?: boolean;
   error?: string;
-  /** Number of posts created (> 1 for distribution list fan-out). */
+  /** Number of posts created (> 1 for distribution fan-out). */
   count?: number;
 }
 
@@ -34,10 +38,11 @@ export interface UpdatePostInput {
   postId: string;
   content: string;
   targetId?: string;
-  imageUrl?: string;
+  imageUrls?: string[];
   linkUrl?: string;
   publishMode: "now" | "scheduled";
   scheduledAt?: string;
+  recurrenceRule?: string;
 }
 
 export interface UpdatePostResult {
@@ -52,7 +57,6 @@ export async function cancelPostAction(postId: string): Promise<CancelPostResult
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { error: "המשתמש אינו מחובר." };
 
-  // Verify ownership and that the post is still cancellable.
   const { data: existing } = await supabase
     .from("posts")
     .select("id")
@@ -110,14 +114,17 @@ export async function updatePostAction(input: UpdatePostInput): Promise<UpdatePo
     }
   }
 
+  const recurrenceRule = input.recurrenceRule?.trim() || null;
+
   const { error: dbError } = await supabase
     .from("posts")
     .update({
       content: input.content,
       target_id: input.targetId?.trim() || null,
-      image_url: input.imageUrl || null,
+      image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
       scheduled_at: scheduledAt,
+      recurrence_rule: recurrenceRule,
     })
     .eq("id", input.postId);
 
@@ -130,36 +137,53 @@ export async function updatePostAction(input: UpdatePostInput): Promise<UpdatePo
   return { success: true };
 }
 
+// ── createPostAction ───────────────────────────────────────────────────────────
+
 export async function createPostAction(
   input: CreatePostInput
 ): Promise<CreatePostResult> {
   const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { error: "המשתמש אינו מחובר." };
 
   const hasToken = !!input.facebookTokenId?.trim();
+  const recurrenceRule = input.recurrenceRule?.trim() || null;
 
-  // ── Distribution list fan-out ──────────────────────────────────────────
-  // Checked before the single-target branches. Creates one post per group_id
-  // with a random 2–5 minute anti-ban delay between each.
-  if (input.distributionListId) {
-    const { data: listData } = await supabase
-      .from("distribution_lists")
-      .select("id, group_ids")
-      .eq("id", input.distributionListId)
-      .eq("user_id", user.id)
-      .maybeSingle();
+  // ── Multi-distribution / extra-groups fan-out ──────────────────────────
+  // Triggered when any distribution lists or manual extra group IDs are provided.
+  const hasFanOut =
+    (input.distributionListIds?.length ?? 0) > 0 ||
+    (input.extraGroupIds?.length ?? 0) > 0;
 
-    if (!listData) {
-      return { error: "רשימת התפוצה לא נמצאה או שאין לך הרשאה אליה." };
+  if (hasFanOut) {
+    // Collect group IDs from selected distribution lists
+    let allGroupIds: string[] = [];
+
+    if (input.distributionListIds?.length) {
+      const { data: lists, error: listErr } = await supabase
+        .from("distribution_lists")
+        .select("group_ids")
+        .in("id", input.distributionListIds)
+        .eq("user_id", user.id);
+
+      if (listErr) {
+        console.error("[createPostAction] distribution list fetch error:", listErr);
+        return { error: "שגיאה בטעינת רשימות התפוצה. אנא נסה שוב." };
+      }
+
+      allGroupIds = (lists ?? []).flatMap((l) => l.group_ids);
     }
 
-    const groupIds: string[] = listData.group_ids;
-    if (groupIds.length === 0) {
-      return { error: "רשימת התפוצה ריקה — הוסף מזהי קבוצות לפני הפרסום." };
+    // Add manually entered group IDs
+    if (input.extraGroupIds?.length) {
+      allGroupIds = [...allGroupIds, ...input.extraGroupIds];
+    }
+
+    // Deduplicate
+    const uniqueGroupIds = [...new Set(allGroupIds.map((id) => id.trim()).filter(Boolean))];
+
+    if (uniqueGroupIds.length === 0) {
+      return { error: "לא נמצאו מזהי קבוצות תקינים. בדוק את הרשימות והמזהים הידניים." };
     }
 
     const baseTime =
@@ -167,26 +191,27 @@ export async function createPostAction(
         ? new Date(input.scheduledAt)
         : new Date();
 
-    // Build cumulative delays: delays[0]=0, delays[i]=delays[i-1]+rand(120,300)
+    // Cumulative anti-ban delays: 0 s, then +120–300 s per post
     const delays: number[] = [0];
-    for (let i = 1; i < groupIds.length; i++) {
+    for (let i = 1; i < uniqueGroupIds.length; i++) {
       delays.push(delays[i - 1] + Math.floor(Math.random() * 181) + 120);
     }
 
-    const rows = groupIds.map((groupId, i) => ({
+    const rows = uniqueGroupIds.map((groupId, i) => ({
       user_id: user.id,
       facebook_token_id: null,
       target_id: groupId,
       content: input.content,
-      image_url: input.imageUrl || null,
+      image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
+      recurrence_rule: recurrenceRule,
       status: "scheduled" as const,
       scheduled_at: new Date(baseTime.getTime() + delays[i] * 1000).toISOString(),
     }));
 
     const { error: dbError } = await supabase.from("posts").insert(rows);
     if (dbError) {
-      console.error("[createPostAction] DB insert error (distribution list):", dbError);
+      console.error("[createPostAction] DB insert error (fan-out):", dbError);
       return { error: "שגיאה בשמירת הפוסטים. אנא נסה שוב." };
     }
 
@@ -195,9 +220,6 @@ export async function createPostAction(
   }
 
   // ── Extension-only mode (no Facebook Page token) ───────────────────────
-  // Save as 'scheduled' so the Chrome Extension can pick it up.
-  // For "now" mode we set scheduled_at = NOW() so the extension claims it
-  // within the next polling cycle (≤ 1 minute).
   if (!hasToken) {
     const scheduledAt =
       input.publishMode === "scheduled" && input.scheduledAt
@@ -209,8 +231,9 @@ export async function createPostAction(
       facebook_token_id: null,
       target_id: input.targetId?.trim() || null,
       content: input.content,
-      image_url: input.imageUrl || null,
+      image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
+      recurrence_rule: recurrenceRule,
       status: "scheduled",
       scheduled_at: scheduledAt,
     });
@@ -246,8 +269,9 @@ export async function createPostAction(
       facebook_token_id: input.facebookTokenId,
       target_id: targetId,
       content: input.content,
-      image_url: input.imageUrl || null,
+      image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
+      recurrence_rule: recurrenceRule,
       status: "scheduled",
       scheduled_at: new Date(input.scheduledAt!).toISOString(),
     });
@@ -266,7 +290,7 @@ export async function createPostAction(
     const facebookPostId = await publishToPage(targetId, token.access_token, {
       message: input.content,
       link: input.linkUrl || undefined,
-      picture: input.imageUrl || undefined,
+      picture: input.imageUrls?.[0] || undefined,
     });
 
     const { error: dbError } = await supabase.from("posts").insert({
@@ -274,8 +298,9 @@ export async function createPostAction(
       facebook_token_id: input.facebookTokenId,
       target_id: targetId,
       content: input.content,
-      image_url: input.imageUrl || null,
+      image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
+      recurrence_rule: recurrenceRule,
       status: "published",
       published_at: new Date().toISOString(),
       facebook_post_id: facebookPostId,
@@ -297,8 +322,9 @@ export async function createPostAction(
       facebook_token_id: input.facebookTokenId,
       target_id: targetId,
       content: input.content,
-      image_url: input.imageUrl || null,
+      image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
+      recurrence_rule: recurrenceRule,
       status: "failed",
       error_message: message,
     });

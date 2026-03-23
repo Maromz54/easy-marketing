@@ -83,6 +83,7 @@ export type Database = {
           facebook_token_id: string | null;
           content: string;
           image_url: string | null;
+          image_urls: string[];
           link_url: string | null;
           target_id: string | null;
           status: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled";
@@ -90,6 +91,7 @@ export type Database = {
           published_at: string | null;
           facebook_post_id: string | null;
           error_message: string | null;
+          recurrence_rule: string | null;
           created_at: string;
         };
         Insert: {
@@ -98,6 +100,7 @@ export type Database = {
           facebook_token_id?: string | null;
           content: string;
           image_url?: string | null;
+          image_urls?: string[];
           link_url?: string | null;
           target_id?: string | null;
           status?: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled";
@@ -105,6 +108,7 @@ export type Database = {
           published_at?: string | null;
           facebook_post_id?: string | null;
           error_message?: string | null;
+          recurrence_rule?: string | null;
           created_at?: string;
         };
         Update: {
@@ -113,6 +117,7 @@ export type Database = {
           facebook_token_id?: string | null;
           content?: string;
           image_url?: string | null;
+          image_urls?: string[];
           link_url?: string | null;
           target_id?: string | null;
           status?: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled";
@@ -120,6 +125,7 @@ export type Database = {
           published_at?: string | null;
           facebook_post_id?: string | null;
           error_message?: string | null;
+          recurrence_rule?: string | null;
           created_at?: string;
         };
         Relationships: [

@@ -99,19 +99,19 @@ async function checkAndPost() {
   // Background tabs render slower, so we give it more time.
   await sleep(5000);
 
-  // 5a-pre. Pre-fetch image in the background service worker.
+  // 5a-pre. Pre-fetch all images in the background service worker (parallel).
   //   Facebook's CSP blocks content scripts from fetching external URLs directly.
   //   The service worker has no CSP restrictions, so we fetch here and pass the
-  //   result as a base64 data URI to the content script as a 4th argument.
-  let imageDataUri = null;
-  if (post.image_url) {
-    console.log("[EasyMarketing] Pre-fetching image (CSP bypass):", post.image_url);
-    imageDataUri = await fetchImageAsDataUri(post.image_url);
-    if (imageDataUri) {
-      console.log("[EasyMarketing] Image pre-fetched ✓ size:", Math.round(imageDataUri.length / 1024), "KB");
-    } else {
-      console.warn("[EasyMarketing] Image pre-fetch failed — content script will attempt direct fetch as fallback.");
-    }
+  //   results as an array of base64 data URIs to the content script as a 4th argument.
+  const imageUrls = post.image_urls ?? [];
+  let imageDataUris = [];
+  if (imageUrls.length > 0) {
+    console.log(`[EasyMarketing] Pre-fetching ${imageUrls.length} image(s) in parallel (CSP bypass)...`);
+    imageDataUris = await Promise.all(imageUrls.map(fetchImageAsDataUri));
+    // Filter out any failed fetches (null entries)
+    const successCount = imageDataUris.filter(Boolean).length;
+    console.log(`[EasyMarketing] Images pre-fetched: ${successCount}/${imageUrls.length} succeeded.`);
+    imageDataUris = imageDataUris.filter(Boolean);
   }
 
   // 5a. Inject content.js into the page (defines window.easyMarketingPost).
@@ -135,9 +135,10 @@ async function checkAndPost() {
     execResult = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: "MAIN",
-      func: (c, i, l, d) => window.easyMarketingPost(c, i, l, d),
-      // 4th arg: base64 data URI pre-fetched by the service worker (null if fetch failed).
-      args: [post.content, post.image_url ?? null, post.link_url ?? null, imageDataUri],
+      func: (c, urls, l, dataUris) => window.easyMarketingPost(c, urls, l, dataUris),
+      // imageUrls: original URL array (used for filenames)
+      // imageDataUris: base64 data URIs pre-fetched by the service worker (CSP bypass)
+      args: [post.content, imageUrls, post.link_url ?? null, imageDataUris],
     });
   } catch (err) {
     chrome.tabs.remove(tab.id).catch(() => {});
@@ -154,7 +155,7 @@ async function checkAndPost() {
     await markPost(apiBaseUrl, extensionSecret, post.id, "published");
   } else if (scriptResult?.imageInjectionFailed) {
     const errMsg = scriptResult?.error ?? "Image injection failed";
-    console.error("[EasyMarketing] Image injection failed — tab LEFT OPEN for inspection:", errMsg);
+    console.error(`[EasyMarketing] Image injection failed (${imageUrls.length} image(s)) — tab LEFT OPEN for inspection:`, errMsg);
     console.error("[EasyMarketing] Open DevTools on the Facebook tab and filter [EasyMarketing] to see which strategy (S1–S4) ran.");
     // Tab intentionally NOT closed — user needs to inspect the dialog.
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed", errMsg);

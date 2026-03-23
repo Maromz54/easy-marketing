@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     .update({ status: "processing" })
     .eq("status", "scheduled")
     .lte("scheduled_at", now)
-    .select("id, content, image_url, link_url, target_id")
+    .select("id, content, image_url, image_urls, link_url, target_id, recurrence_rule")
     .limit(1)
     .maybeSingle();
 
@@ -28,5 +28,26 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ post: data ?? null });
+  if (!data) {
+    return NextResponse.json({ post: null });
+  }
+
+  // Normalise image_urls: prefer the new array, fall back to wrapping the legacy image_url.
+  const imageUrls: string[] =
+    data.image_urls?.length
+      ? data.image_urls
+      : data.image_url
+      ? [data.image_url]
+      : [];
+
+  return NextResponse.json({
+    post: {
+      id: data.id,
+      content: data.content,
+      image_urls: imageUrls,
+      link_url: data.link_url,
+      target_id: data.target_id,
+      recurrence_rule: data.recurrence_rule,
+    },
+  });
 }

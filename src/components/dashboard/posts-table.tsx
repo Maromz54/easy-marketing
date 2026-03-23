@@ -19,6 +19,7 @@ export interface PostRow {
   created_at: string;
   error_message: string | null;
   facebook_post_id: string | null;
+  recurrence_rule: string | null;
   // joined via foreign key
   facebook_tokens: { page_name: string | null } | null;
 }
@@ -183,6 +184,19 @@ function PostTableRow({
           {displayDate.label}
         </span>
         <span dir="ltr">{formattedDate}</span>
+        {post.recurrence_rule && (
+          <span
+            title={post.recurrence_rule}
+            className="mt-0.5 block text-xs text-muted-foreground/60"
+          >
+            🔁{" "}
+            {post.recurrence_rule === "monthly"
+              ? "חודשי"
+              : post.recurrence_rule.startsWith("weekly:")
+              ? "שבועי"
+              : post.recurrence_rule}
+          </span>
+        )}
       </TableCell>
 
       {/* Actions — only for scheduled posts */}

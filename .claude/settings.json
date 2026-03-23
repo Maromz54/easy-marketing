@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(npm install:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(find 'c:/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/supabase/migrations' -name *.sql -type f)"
     ]
   }
 }

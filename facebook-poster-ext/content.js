@@ -12,7 +12,9 @@
 // DEBUG: Open DevTools on the Facebook tab → Console → filter "[EasyMarketing]"
 // ─────────────────────────────────────────────────────────────────────────────
 
-window.easyMarketingPost = async function (content, imageUrl, linkUrl, imageDataUri) {
+// imageUrls     : string[]  — original URLs (used for filenames)
+// imageDataUris : string[]  — base64 data URIs pre-fetched by background.js (CSP bypass)
+window.easyMarketingPost = async function (content, imageUrls, linkUrl, imageDataUris) {
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const log   = (...a) => console.log("[EasyMarketing]",  ...a);
@@ -167,7 +169,11 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl, imageData
     log("Text injection confirmed ✓");
   }
 
-  // ── STEP 3b — Image attachment (MANDATORY if imageUrl provided) ───────────
+  // Normalise: accept both legacy single string and new arrays
+  if (!Array.isArray(imageUrls))    imageUrls    = imageUrls    ? [imageUrls]    : [];
+  if (!Array.isArray(imageDataUris)) imageDataUris = imageDataUris ? [imageDataUris] : [];
+
+  // ── STEP 3b — Image attachment (MANDATORY if images provided) ─────────────
   //
   // If the post has an image and all injection strategies fail, we return
   // imageInjectionFailed: true so background.js marks the post as failed
@@ -180,8 +186,8 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl, imageData
   //             clicks the photo-toolbar button first if input not yet in DOM
   //   S-IMG-4 : Global document scan using Facebook-specific accept strings
 
-  if (imageUrl) {
-    log("STEP 3b — Image injection (MANDATORY). URL:", imageUrl);
+  if (imageUrls.length > 0) {
+    log(`STEP 3b — Image injection (MANDATORY). ${imageUrls.length} image(s).`);
     let imageInjected = false;
 
     // Helper: detect a rendered image preview in the dialog
@@ -194,45 +200,44 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl, imageData
       );
     }
 
-    // Helper: assign a File to a file input and fire change/input events
-    function assignToFileInput(input, fileObj) {
-      const dt = new DataTransfer();
-      dt.items.add(fileObj);
-      Object.defineProperty(input, "files", { value: dt.files, configurable: true });
+    // Helper: assign a DataTransfer to a file input and fire change/input events
+    function assignToFileInput(input, dtObj) {
+      Object.defineProperty(input, "files", { value: dtObj.files, configurable: true });
       input.dispatchEvent(new Event("change", { bubbles: true }));
       input.dispatchEvent(new Event("input",  { bubbles: true }));
     }
 
-    // ── Acquire image data ────────────────────────────────────────────────
-    // The background service worker pre-fetched the image and passed it as a
-    // base64 data URI (4th arg) to avoid Facebook's CSP blocking fetch().
-    // If the pre-fetch failed, we fall back to a direct fetch here — which may
-    // also be blocked by CSP, but at least we log clearly what happened.
-
-    let file;
+    // ── Build File objects from pre-fetched data URIs (or direct fetch fallback) ──
+    let dt; // shared DataTransfer containing ALL image files
     try {
-      const filename = decodeURIComponent(imageUrl.split("/").pop() || "image.jpg");
+      let files = [];
 
-      if (imageDataUri) {
-        log("IMG: Decoding pre-fetched data URI from background (CSP bypass) ✓");
-        const [header, base64Data] = imageDataUri.split(",");
-        const mimeType = header.match(/data:([^;]+)/)?.[1] ?? "image/jpeg";
-        const binaryStr = atob(base64Data);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) {
-          bytes[i] = binaryStr.charCodeAt(i);
-        }
-        const blob = new Blob([bytes], { type: mimeType });
-        file = new File([blob], filename, { type: mimeType });
-        log(`IMG: File created — name="${filename}" type=${file.type} size=${file.size} bytes`);
+      if (imageDataUris.length > 0) {
+        log(`IMG: Decoding ${imageDataUris.length} pre-fetched data URI(s) from background ✓`);
+        files = imageDataUris.map((dataUri, i) => {
+          const [header, b64] = dataUri.split(",");
+          const mime = header.match(/data:([^;]+)/)?.[1] ?? "image/jpeg";
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+          const blob = new Blob([bytes], { type: mime });
+          const name = decodeURIComponent((imageUrls[i] ?? "").split("/").pop() || `image${i}.jpg`);
+          return new File([blob], name, { type: mime });
+        });
       } else {
-        log("IMG: No pre-fetched data — attempting direct fetch (may be blocked by CSP)...");
-        const resp = await fetch(imageUrl);
-        if (!resp.ok) throw new Error(`fetch ${resp.status} ${resp.statusText}`);
-        const blob = await resp.blob();
-        log(`IMG: Direct fetch succeeded — type=${blob.type} size=${blob.size} bytes`);
-        file = new File([blob], filename, { type: blob.type || "image/jpeg" });
+        log("IMG: No pre-fetched data URIs — attempting direct fetch fallback (may be blocked by CSP)...");
+        for (let i = 0; i < imageUrls.length; i++) {
+          const resp = await fetch(imageUrls[i]);
+          if (!resp.ok) throw new Error(`fetch ${resp.status} for ${imageUrls[i]}`);
+          const blob = await resp.blob();
+          const name = decodeURIComponent(imageUrls[i].split("/").pop() || `image${i}.jpg`);
+          files.push(new File([blob], name, { type: blob.type || "image/jpeg" }));
+        }
       }
+
+      log(`IMG: ${files.length} File(s) ready — sizes: ${files.map((f) => f.size).join(", ")} bytes`);
+      dt = new DataTransfer();
+      files.forEach((f) => dt.items.add(f));
     } catch (fetchErr) {
       err("IMG: Failed to acquire image data:", fetchErr.message);
       return {
@@ -243,10 +248,8 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl, imageData
     }
 
     // ── S-IMG-1: paste event on the Lexical contenteditable ────────────────
-    log("IMG S1: Dispatching paste event on composer...");
+    log(`IMG S1: Dispatching paste event on composer (${dt.items.length} file(s))...`);
     try {
-      const dt = new DataTransfer();
-      dt.items.add(file);
       composer.focus();
       await sleep(150);
       composer.dispatchEvent(new ClipboardEvent("paste", {
@@ -264,10 +267,8 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl, imageData
 
     // ── S-IMG-2: drop event on composerDialog ──────────────────────────────
     if (!imageInjected) {
-      log("IMG S2: Dispatching drop events on dialog...");
+      log(`IMG S2: Dispatching drop events on dialog (${dt.items.length} file(s))...`);
       try {
-        const dt = new DataTransfer();
-        dt.items.add(file);
         const dropTarget = composerDialog ?? composer;
         dropTarget.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true, cancelable: true }));
         await sleep(80);
@@ -323,8 +324,8 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl, imageData
         }
 
         if (fileInput) {
-          log(`IMG S3: file input found (accept="${fileInput.accept}") — assigning file...`);
-          assignToFileInput(fileInput, file);
+          log(`IMG S3: file input found (accept="${fileInput.accept}") — assigning ${dt.items.length} file(s)...`);
+          assignToFileInput(fileInput, dt);
           log("IMG S3: files assigned — waiting 3 s...");
           await sleep(3000);
           // File inputs don't always produce a detectable preview; assume success
@@ -370,8 +371,8 @@ window.easyMarketingPost = async function (content, imageUrl, linkUrl, imageData
         }
 
         if (fileInput) {
-          assignToFileInput(fileInput, file);
-          log("IMG S4: files assigned globally — waiting 3 s...");
+          assignToFileInput(fileInput, dt);
+          log(`IMG S4: ${dt.items.length} file(s) assigned globally — waiting 3 s...`);
           await sleep(3000);
           imageInjected = true;
           if (hasImagePreview()) {

@@ -1,17 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
   Loader2, Send, CalendarClock, Image as ImageIcon,
-  Link2, CheckCircle2, Target, Puzzle, ListChecks, Pencil, X, Upload,
+  Link2, CheckCircle2, Target, Puzzle, ListChecks, Pencil, X, Upload, RefreshCw,
 } from "lucide-react";
 
 import { createPostAction, updatePostAction } from "@/actions/posts";
 import { createClient } from "@/lib/supabase/client";
 import { PostPreview } from "@/components/dashboard/post-preview";
+import { DistributionPanel } from "@/components/dashboard/distribution-panel";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -24,6 +25,8 @@ import {
   FormField, FormItem, FormLabel, FormMessage,
 } from "@/components/ui/form";
 import { Separator } from "@/components/ui/separator";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Database } from "@/lib/supabase/types";
 import type { PostRow } from "@/components/dashboard/posts-table";
@@ -32,31 +35,44 @@ type FacebookToken = Database["public"]["Tables"]["facebook_tokens"]["Row"];
 type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["Row"];
 
 // ── Validation Schema ─────────────────────────────────────────────────────────
-const urlOrEmpty = z
+const urlSchema = z
   .string()
-  .optional()
-  .refine((v) => !v || v === "" || /^https?:\/\/.+/.test(v), {
+  .refine((v) => !v || /^https?:\/\/.+/.test(v), {
     message: "כתובת URL חייבת להתחיל ב-http:// או https://",
   });
 
 const postSchema = z
   .object({
     facebookTokenId: z.string().optional(),
-    distributionListId: z.string().optional(),
+    // Multi-distribution: array of selected list IDs
+    distributionListIds: z.array(z.string()).default([]),
+    // Manually entered group IDs (comma-separated string)
+    extraGroupIds: z.string().default(""),
+    // Single-target fallback (shown when no distribution lists selected)
     targetId: z
       .string()
       .optional()
-      .refine((v) => !v || v === "" || /^\d+$/.test(v.trim()), {
-        message: "מזהה היעד חייב להיות מספרי בלבד (ספרות בלבד, ללא רווחים).",
+      .refine((v) => !v || /^\d+$/.test(v.trim()), {
+        message: "מזהה היעד חייב להיות מספרי בלבד.",
       }),
     content: z
       .string()
       .min(1, { message: "תוכן הפוסט הוא חובה." })
       .max(63206, { message: "הפוסט ארוך מדי (מקסימום 63,206 תווים)." }),
-    imageUrl: urlOrEmpty,
-    linkUrl: urlOrEmpty,
+    // Multiple image URLs (managed by upload widget, not validated individually here)
+    imageUrls: z.array(z.string()).default([]),
+    linkUrl: z
+      .string()
+      .optional()
+      .refine((v) => !v || /^https?:\/\/.+/.test(v), {
+        message: "כתובת URL חייבת להתחיל ב-http:// או https://",
+      }),
     publishMode: z.enum(["now", "scheduled"]),
     scheduledAt: z.string().optional(),
+    // Recurrence: "none" | "weekly" | "monthly"
+    recurrenceType: z.enum(["none", "weekly", "monthly"]).default("none"),
+    // Selected weekdays (0=Sun … 6=Sat) when recurrenceType === "weekly"
+    recurrenceDays: z.array(z.number()).default([]),
   })
   .superRefine((data, ctx) => {
     if (data.publishMode === "scheduled") {
@@ -77,13 +93,30 @@ const postSchema = z
         });
       }
     }
+    if (data.recurrenceType === "weekly" && data.recurrenceDays.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "בחר לפחות יום אחד לחזרה שבועית.",
+        path: ["recurrenceDays"],
+      });
+    }
   });
 
 type PostFormValues = z.infer<typeof postSchema>;
 
-// ── Sentinels ─────────────────────────────────────────────────────────────────
+// ── Sentinel ──────────────────────────────────────────────────────────────────
 const EXTENSION_SENTINEL = "__none__";
-const DIST_LIST_SENTINEL = "__none__";
+
+// ── Hebrew weekday labels ─────────────────────────────────────────────────────
+const WEEKDAYS = [
+  { day: 0, label: "א׳" },
+  { day: 1, label: "ב׳" },
+  { day: 2, label: "ג׳" },
+  { day: 3, label: "ד׳" },
+  { day: 4, label: "ה׳" },
+  { day: 5, label: "ו׳" },
+  { day: 6, label: "ש׳" },
+];
 
 // ── Component ─────────────────────────────────────────────────────────────────
 interface PostComposerProps {
@@ -112,13 +145,16 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
     resolver: zodResolver(postSchema),
     defaultValues: {
       facebookTokenId: EXTENSION_SENTINEL,
-      distributionListId: DIST_LIST_SENTINEL,
+      distributionListIds: [],
+      extraGroupIds: "",
       targetId: "",
       content: "",
-      imageUrl: "",
+      imageUrls: [],
       linkUrl: "",
       publishMode: "now",
       scheduledAt: "",
+      recurrenceType: "none",
+      recurrenceDays: [],
     },
   });
 
@@ -132,26 +168,58 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
             .slice(0, 16)
         : "";
 
+      const ep = editingPost as PostRow & {
+        target_id?: string | null;
+        image_url?: string | null;
+        image_urls?: string[];
+        link_url?: string | null;
+        recurrence_rule?: string | null;
+      };
+
+      // Parse existing recurrence rule back into form fields
+      let recurrenceType: "none" | "weekly" | "monthly" = "none";
+      let recurrenceDays: number[] = [];
+      if (ep.recurrence_rule?.startsWith("weekly:")) {
+        recurrenceType = "weekly";
+        recurrenceDays = ep.recurrence_rule.slice(7).split(",").map(Number);
+      } else if (ep.recurrence_rule === "monthly") {
+        recurrenceType = "monthly";
+      }
+
+      // Normalise image_urls: prefer array, fall back to single image_url
+      const imageUrls =
+        ep.image_urls?.length
+          ? ep.image_urls
+          : ep.image_url
+          ? [ep.image_url]
+          : [];
+
       form.reset({
         facebookTokenId: EXTENSION_SENTINEL,
-        distributionListId: DIST_LIST_SENTINEL,
-        targetId: (editingPost as unknown as { target_id: string | null }).target_id ?? "",
+        distributionListIds: [],
+        extraGroupIds: "",
+        targetId: ep.target_id ?? "",
         content: editingPost.content,
-        imageUrl: (editingPost as unknown as { image_url: string | null }).image_url ?? "",
-        linkUrl: (editingPost as unknown as { link_url: string | null }).link_url ?? "",
+        imageUrls,
+        linkUrl: ep.link_url ?? "",
         publishMode: editingPost.scheduled_at ? "scheduled" : "now",
         scheduledAt: localScheduledAt,
+        recurrenceType,
+        recurrenceDays,
       });
     } else {
       form.reset({
         facebookTokenId: EXTENSION_SENTINEL,
-        distributionListId: DIST_LIST_SENTINEL,
+        distributionListIds: [],
+        extraGroupIds: "",
         targetId: "",
         content: "",
-        imageUrl: "",
+        imageUrls: [],
         linkUrl: "",
         publishMode: "now",
         scheduledAt: "",
+        recurrenceType: "none",
+        recurrenceDays: [],
       });
     }
     setUploadError(null);
@@ -159,23 +227,46 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
   }, [editingPost]);
 
   // Watched values
-  const publishMode      = form.watch("publishMode");
-  const watchedTokenId   = form.watch("facebookTokenId");
-  const watchedDistListId = form.watch("distributionListId");
-  const watchedContent   = form.watch("content");
-  const watchedImageUrl  = form.watch("imageUrl");
-  const contentLength    = watchedContent?.length ?? 0;
+  const publishMode       = form.watch("publishMode");
+  const watchedTokenId    = form.watch("facebookTokenId");
+  const watchedContent    = form.watch("content");
+  const watchedImageUrls  = form.watch("imageUrls");
+  const watchedDistIds    = form.watch("distributionListIds");
+  const watchedExtraIds   = form.watch("extraGroupIds");
+  const recurrenceType    = form.watch("recurrenceType");
+  const recurrenceDays    = form.watch("recurrenceDays");
+  const contentLength     = watchedContent?.length ?? 0;
 
-  const useExtension  = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
-  const useDistList   = !!watchedDistListId && watchedDistListId !== DIST_LIST_SENTINEL;
-  const selectedList  = safeLists.find((l) => l.id === watchedDistListId);
+  const useExtension = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
+
+  const useDistList = watchedDistIds.length > 0 || !!watchedExtraIds?.trim();
+
+  const totalGroupCount = useMemo(() => {
+    const fromLists = safeLists
+      .filter((l) => watchedDistIds.includes(l.id))
+      .flatMap((l) => l.group_ids);
+    const manual = (watchedExtraIds ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return new Set([...fromLists, ...manual]).size;
+  }, [watchedDistIds, watchedExtraIds, safeLists]);
 
   const minDateTime = new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16);
 
-  // ── Image upload ───────────────────────────────────────────────────────────
+  // Recurrence rule: derived from form fields
+  const resolvedRecurrenceRule = useMemo(() => {
+    if (recurrenceType === "weekly" && recurrenceDays.length > 0) {
+      return `weekly:${[...recurrenceDays].sort().join(",")}`;
+    }
+    if (recurrenceType === "monthly") return "monthly";
+    return undefined;
+  }, [recurrenceType, recurrenceDays]);
+
+  // ── Image upload ────────────────────────────────────────────────────────────
   async function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
 
     setIsUploading(true);
     setUploadError(null);
@@ -188,29 +279,42 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
       return;
     }
 
-    const ext = file.name.split(".").pop() ?? "jpg";
-    const path = `${user.id}/${Date.now()}.${ext}`;
+    const newUrls: string[] = [];
+    for (const file of files) {
+      const ext = file.name.split(".").pop() ?? "jpg";
+      const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
 
-    const { error } = await supabase.storage
-      .from("post_images")
-      .upload(path, file, { upsert: false });
-
-    if (error) {
-      console.error("[PostComposer] Storage upload error:", error);
-      setUploadError(`שגיאה בהעלאת התמונה: ${error.message}`);
-    } else {
-      const { data: urlData } = supabase.storage
+      const { error } = await supabase.storage
         .from("post_images")
-        .getPublicUrl(path);
-      form.setValue("imageUrl", urlData.publicUrl, { shouldValidate: true });
+        .upload(path, file, { upsert: false });
+
+      if (error) {
+        console.error("[PostComposer] Storage upload error:", error);
+        setUploadError(`שגיאה בהעלאת "${file.name}": ${error.message}`);
+        break;
+      }
+
+      const { data: urlData } = supabase.storage.from("post_images").getPublicUrl(path);
+      newUrls.push(urlData.publicUrl);
+    }
+
+    if (newUrls.length > 0) {
+      form.setValue("imageUrls", [...(watchedImageUrls ?? []), ...newUrls], { shouldValidate: true });
     }
 
     setIsUploading(false);
-    // Reset the file input so the same file can be re-selected if removed
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  // ── Submit ─────────────────────────────────────────────────────────────────
+  function removeImage(index: number) {
+    form.setValue(
+      "imageUrls",
+      (watchedImageUrls ?? []).filter((_, i) => i !== index),
+      { shouldValidate: true }
+    );
+  }
+
+  // ── Submit ──────────────────────────────────────────────────────────────────
   function onSubmit(values: PostFormValues) {
     setServerError(null);
     startTransition(async () => {
@@ -219,12 +323,11 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           postId: editingPost.id,
           content: values.content,
           targetId: values.targetId?.trim() || undefined,
-          imageUrl: values.imageUrl || undefined,
+          imageUrls: values.imageUrls.length ? values.imageUrls : undefined,
           linkUrl: values.linkUrl || undefined,
           publishMode: values.publishMode,
-          // datetime-local gives a local-time string with no timezone (e.g. "2026-03-23T15:00").
-          // Convert to UTC ISO so Postgres stores the correct moment in time.
           scheduledAt: values.scheduledAt ? new Date(values.scheduledAt).toISOString() : undefined,
+          recurrenceRule: resolvedRecurrenceRule,
         });
         if (result.error) {
           setServerError(result.error);
@@ -239,20 +342,23 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           ? undefined
           : values.facebookTokenId?.trim() || undefined;
 
-      const resolvedDistListId =
-        values.distributionListId === DIST_LIST_SENTINEL
-          ? undefined
-          : values.distributionListId;
+      // Parse extra group IDs from the comma-separated input
+      const extraGroupIds = (values.extraGroupIds ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
 
       const result = await createPostAction({
         facebookTokenId: resolvedTokenId,
         targetId: values.targetId?.trim() || undefined,
-        distributionListId: resolvedDistListId,
+        distributionListIds: values.distributionListIds.length ? values.distributionListIds : undefined,
+        extraGroupIds: extraGroupIds.length ? extraGroupIds : undefined,
         content: values.content,
-        imageUrl: values.imageUrl || undefined,
+        imageUrls: values.imageUrls.length ? values.imageUrls : undefined,
         linkUrl: values.linkUrl || undefined,
         publishMode: values.publishMode,
         scheduledAt: values.scheduledAt ? new Date(values.scheduledAt).toISOString() : undefined,
+        recurrenceRule: resolvedRecurrenceRule,
       });
 
       if (result.error) {
@@ -262,9 +368,12 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
         setSuccessCount(result.count ?? null);
         form.reset({
           facebookTokenId: values.facebookTokenId ?? EXTENSION_SENTINEL,
-          distributionListId: DIST_LIST_SENTINEL,
+          distributionListIds: [],
+          extraGroupIds: "",
           targetId: values.targetId ?? "",
           publishMode: "now",
+          recurrenceType: "none",
+          recurrenceDays: [],
         });
         setTimeout(() => { setIsSuccess(false); setSuccessCount(null); }, 5000);
       }
@@ -305,18 +414,17 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
             <Puzzle className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
               הפוסט יישמר במסד הנתונים ויפורסם על ידי{" "}
-              <strong>תוסף Chrome</strong> באמצעות הפרופיל האישי שלך —
-              ודא שהוזן מזהה יעד (קבוצה) ושהתוסף פעיל.
+              <strong>תוסף Chrome</strong> — ודא שהוזן מזהה יעד ושהתוסף פעיל.
             </span>
           </div>
         )}
 
-        {!isEditing && useDistList && selectedList && (
+        {!isEditing && useDistList && (
           <div className="mb-5 flex items-start gap-2.5 rounded-md bg-purple-50 border border-purple-200 px-4 py-3 text-sm text-purple-800">
             <ListChecks className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
-              הפוסט יפורסם ל-<strong>{selectedList.group_ids.length} קבוצות</strong>{" "}
-              מרשימת <strong>{selectedList.name}</strong> — עם השהיה של 2–5 דקות בין קבוצה לקבוצה.
+              הפוסט יפורסם ל-<strong>{totalGroupCount} קבוצות ייחודיות</strong> —
+              עם השהיה של 2–5 דקות בין קבוצה לקבוצה.
             </span>
           </div>
         )}
@@ -326,7 +434,7 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>
               {successCount && successCount > 1
-                ? `נוצרו ${successCount} פוסטים — יפורסמו בהפרש של 2–5 דקות בין קבוצה לקבוצה!`
+                ? `נוצרו ${successCount} פוסטים — יפורסמו בהפרש של 2–5 דקות!`
                 : publishMode === "now"
                 ? "הפוסט נשמר ויפורסם בקרוב על ידי התוסף!"
                 : "הפוסט תוזמן בהצלחה!"}
@@ -340,88 +448,72 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           </div>
         )}
 
-        {/* ── Two-column layout: form + live preview ─────────────────────── */}
+        {/* ── Two-column layout ──────────────────────────────────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
 
-          {/* ── Form column ───────────────────────────────────────────────── */}
+          {/* ── Form ──────────────────────────────────────────────────────── */}
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
 
-              {/* Page selector + Distribution list (hidden in edit mode) */}
-              {!isEditing && (
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {safePages.length > 0 && (
-                    <FormField
-                      control={form.control}
-                      name="facebookTokenId"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>ערוץ פרסום</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger><SelectValue /></SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value={EXTENSION_SENTINEL}>
-                                🧩 פרופיל אישי (באמצעות התוסף)
-                              </SelectItem>
-                              {safePages.map((page) => (
-                                <SelectItem key={page.id} value={page.id}>
-                                  📄 {page.page_name ?? `דף ${page.page_id}`}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <FormDescription className="text-xs">
-                            {useExtension
-                              ? "יפורסם דרך תוסף Chrome עם הפרופיל האישי"
-                              : "יפורסם דרך Graph API עם אסימון הדף"}
-                          </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
+              {/* Channel selector (hidden in edit mode) */}
+              {!isEditing && safePages.length > 0 && (
+                <FormField
+                  control={form.control}
+                  name="facebookTokenId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>ערוץ פרסום</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value={EXTENSION_SENTINEL}>
+                            🧩 פרופיל אישי (באמצעות התוסף)
+                          </SelectItem>
+                          {safePages.map((page) => (
+                            <SelectItem key={page.id} value={page.id}>
+                              📄 {page.page_name ?? `דף ${page.page_id}`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormDescription className="text-xs">
+                        {useExtension
+                          ? "יפורסם דרך תוסף Chrome עם הפרופיל האישי"
+                          : "יפורסם דרך Graph API עם אסימון הדף"}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
                   )}
-
-                  {safeLists.length > 0 && (
-                    <FormField
-                      control={form.control}
-                      name="distributionListId"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="flex items-center gap-1.5">
-                            <ListChecks className="h-3.5 w-3.5 text-muted-foreground" />
-                            רשימת תפוצה
-                          </FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger><SelectValue /></SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value={DIST_LIST_SENTINEL}>
-                                פרסום ליעד בודד
-                              </SelectItem>
-                              {safeLists.map((list) => (
-                                <SelectItem key={list.id} value={list.id}>
-                                  {list.name} ({list.group_ids.length} קבוצות)
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <FormDescription className="text-xs">
-                            {useDistList
-                              ? `יפורסם ל-${selectedList?.group_ids.length ?? 0} קבוצות עם השהיה`
-                              : "בחר רשימה לפרסום מרובה"}
-                          </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  )}
-                </div>
+                />
               )}
 
-              {/* Target ID */}
+              {/* Distribution lists (checkbox panel, hidden in edit mode) */}
+              {!isEditing && safeLists.length > 0 && (
+                <FormField
+                  control={form.control}
+                  name="distributionListIds"
+                  render={() => (
+                    <FormItem>
+                      <FormLabel className="flex items-center gap-1.5">
+                        <ListChecks className="h-3.5 w-3.5 text-muted-foreground" />
+                        יעדי פרסום
+                      </FormLabel>
+                      <DistributionPanel
+                        lists={safeLists}
+                        selectedIds={watchedDistIds}
+                        extraGroupIds={watchedExtraIds}
+                        onChangeIds={(ids) => form.setValue("distributionListIds", ids)}
+                        onChangeExtra={(val) => form.setValue("extraGroupIds", val)}
+                      />
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              {/* Single target ID — shown only when no dist lists selected */}
               {!useDistList && (
                 <FormField
                   control={form.control}
@@ -450,15 +542,6 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
                     </FormItem>
                   )}
                 />
-              )}
-
-              {useDistList && selectedList && (
-                <div className="rounded-md border border-purple-200 bg-purple-50/50 px-4 py-3 text-sm text-purple-700">
-                  <span className="font-medium">{selectedList.name}</span>
-                  {" — "}
-                  {selectedList.group_ids.slice(0, 3).join(", ")}
-                  {selectedList.group_ids.length > 3 && ` +${selectedList.group_ids.length - 3} נוספות`}
-                </div>
               )}
 
               <Separator />
@@ -491,71 +574,68 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
                 )}
               />
 
-              {/* Image upload */}
+              {/* Multi-image upload */}
               <FormField
                 control={form.control}
-                name="imageUrl"
-                render={({ field }) => (
+                name="imageUrls"
+                render={() => (
                   <FormItem>
                     <FormLabel className="flex items-center gap-1.5 text-muted-foreground font-normal">
                       <ImageIcon className="h-3.5 w-3.5" />
-                      תמונה (אופציונלי)
+                      תמונות (אופציונלי)
                     </FormLabel>
 
-                    {/* Hidden file input */}
+                    {/* Hidden file input — multiple */}
                     <input
                       ref={fileInputRef}
                       type="file"
                       accept="image/jpeg,image/png,image/gif,image/webp"
+                      multiple
                       className="hidden"
                       onChange={handleImageSelect}
                     />
 
-                    {/* Hidden form field value — set programmatically */}
-                    <input type="hidden" {...field} />
-
-                    {field.value ? (
-                      /* Thumbnail + remove */
-                      <div className="flex items-start gap-3">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={field.value}
-                          alt="תצוגה מקדימה"
-                          className="h-20 w-20 rounded-md object-cover border"
-                        />
-                        <div className="flex flex-col gap-1.5">
-                          <p className="text-xs text-muted-foreground truncate max-w-[180px]" dir="ltr">
-                            {field.value.split("/").pop()}
-                          </p>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="text-destructive hover:text-destructive w-fit"
-                            onClick={() => form.setValue("imageUrl", "", { shouldValidate: true })}
-                          >
-                            <X className="h-3.5 w-3.5 ms-1" />
-                            הסר תמונה
-                          </Button>
-                        </div>
+                    {/* Thumbnail grid */}
+                    {(watchedImageUrls ?? []).length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {(watchedImageUrls ?? []).map((url, idx) => (
+                          <div key={idx} className="relative group">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={url}
+                              alt={`תמונה ${idx + 1}`}
+                              className="h-20 w-20 rounded-md object-cover border"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeImage(idx)}
+                              className="absolute -top-1.5 -end-1.5 h-5 w-5 rounded-full bg-destructive text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                    ) : (
-                      /* Upload button */
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={isUploading}
-                        onClick={() => fileInputRef.current?.click()}
-                      >
-                        {isUploading ? (
-                          <Loader2 className="ms-2 h-4 w-4 animate-spin" />
-                        ) : (
-                          <Upload className="ms-2 h-4 w-4" />
-                        )}
-                        {isUploading ? "מעלה..." : "העלה תמונה"}
-                      </Button>
                     )}
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={isUploading}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      {isUploading ? (
+                        <Loader2 className="ms-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Upload className="ms-2 h-4 w-4" />
+                      )}
+                      {isUploading
+                        ? "מעלה..."
+                        : (watchedImageUrls ?? []).length > 0
+                        ? "הוסף תמונות נוספות"
+                        : "העלה תמונות"}
+                    </Button>
 
                     {uploadError && (
                       <p className="text-xs text-destructive">{uploadError}</p>
@@ -641,25 +721,106 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
               />
 
               {publishMode === "scheduled" && (
-                <FormField
-                  control={form.control}
-                  name="scheduledAt"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>תאריך ושעת פרסום</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="datetime-local"
-                          dir="ltr"
-                          className="text-start w-full sm:w-auto"
-                          min={minDateTime}
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                <>
+                  <FormField
+                    control={form.control}
+                    name="scheduledAt"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>תאריך ושעת פרסום</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="datetime-local"
+                            dir="ltr"
+                            className="text-start w-full sm:w-auto"
+                            min={minDateTime}
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  {/* Recurrence section */}
+                  <div className="rounded-md border border-input px-4 py-3 space-y-3">
+                    <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      חזרה (אופציונלי)
+                    </div>
+
+                    <FormField
+                      control={form.control}
+                      name="recurrenceType"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormControl>
+                            <RadioGroup
+                              onValueChange={field.onChange}
+                              value={field.value}
+                              className="space-y-1.5"
+                            >
+                              <label htmlFor="rec-none" className="flex items-center gap-2 cursor-pointer text-sm">
+                                <RadioGroupItem value="none" id="rec-none" />
+                                חד-פעמי (ברירת מחדל)
+                              </label>
+                              <label htmlFor="rec-weekly" className="flex items-center gap-2 cursor-pointer text-sm">
+                                <RadioGroupItem value="weekly" id="rec-weekly" />
+                                שבועי
+                              </label>
+                              <label htmlFor="rec-monthly" className="flex items-center gap-2 cursor-pointer text-sm">
+                                <RadioGroupItem value="monthly" id="rec-monthly" />
+                                חודשי (באותו תאריך)
+                              </label>
+                            </RadioGroup>
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    {/* Weekday checkboxes */}
+                    {recurrenceType === "weekly" && (
+                      <FormField
+                        control={form.control}
+                        name="recurrenceDays"
+                        render={() => (
+                          <FormItem>
+                            <div className="flex flex-wrap gap-2 pt-1">
+                              {WEEKDAYS.map(({ day, label }) => {
+                                const checked = recurrenceDays.includes(day);
+                                return (
+                                  <label
+                                    key={day}
+                                    className={`flex items-center gap-1.5 cursor-pointer rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+                                      checked
+                                        ? "border-primary bg-primary/10 text-primary font-medium"
+                                        : "border-input hover:border-muted-foreground/40"
+                                    }`}
+                                  >
+                                    <Checkbox
+                                      checked={checked}
+                                      onCheckedChange={(c) => {
+                                        const current = form.getValues("recurrenceDays");
+                                        form.setValue(
+                                          "recurrenceDays",
+                                          c ? [...current, day] : current.filter((d) => d !== day)
+                                        );
+                                      }}
+                                      className="h-3 w-3"
+                                    />
+                                    {label}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )}
+                  </div>
+                </>
               )}
 
               {/* Submit */}
@@ -677,9 +838,12 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
             </form>
           </Form>
 
-          {/* ── Live preview column ──────────────────────────────────────── */}
+          {/* ── Live preview ───────────────────────────────────────────────── */}
           <div className="lg:sticky lg:top-24">
-            <PostPreview content={watchedContent} imageUrl={watchedImageUrl} />
+            <PostPreview
+              content={watchedContent}
+              imageUrl={(watchedImageUrls ?? [])[0]}
+            />
           </div>
 
         </div>
