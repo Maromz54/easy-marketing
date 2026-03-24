@@ -23,22 +23,25 @@ export function DistributionPanel({
   onChangeIds,
   onChangeExtra,
 }: DistributionPanelProps) {
+  const safeSelectedIds = selectedIds ?? [];
+  const safeExtraIds    = extraGroupIds ?? "";
+
   const totalCount = useMemo(() => {
     const fromLists = lists
-      .filter((l) => selectedIds.includes(l.id))
+      .filter((l) => safeSelectedIds.includes(l.id))
       .flatMap((l) => l.group_ids);
-    const manual = extraGroupIds
+    const manual = safeExtraIds
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
     return new Set([...fromLists, ...manual]).size;
-  }, [lists, selectedIds, extraGroupIds]);
+  }, [lists, safeSelectedIds, safeExtraIds]);
 
   function toggle(id: string) {
     onChangeIds(
-      selectedIds.includes(id)
-        ? selectedIds.filter((x) => x !== id)
-        : [...selectedIds, id]
+      safeSelectedIds.includes(id)
+        ? safeSelectedIds.filter((x) => x !== id)
+        : [...safeSelectedIds, id]
     );
   }
 
@@ -50,7 +53,7 @@ export function DistributionPanel({
           <div key={list.id} className="flex items-center gap-2.5">
             <Checkbox
               id={`dist-${list.id}`}
-              checked={selectedIds.includes(list.id)}
+              checked={safeSelectedIds.includes(list.id)}
               onCheckedChange={() => toggle(list.id)}
             />
             <Label
@@ -73,7 +76,7 @@ export function DistributionPanel({
           placeholder="123456789, 987654321"
           dir="ltr"
           className="text-start font-mono text-xs h-8"
-          value={extraGroupIds}
+          value={safeExtraIds}
           onChange={(e) => onChangeExtra(e.target.value)}
         />
       </div>

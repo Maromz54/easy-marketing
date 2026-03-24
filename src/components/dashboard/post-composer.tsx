@@ -226,15 +226,16 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingPost]);
 
-  // Watched values
+  // Watched values — coerce to non-nullable so downstream code never crashes on
+  // undefined (form.watch can return undefined before the first render commit).
   const publishMode       = form.watch("publishMode");
   const watchedTokenId    = form.watch("facebookTokenId");
   const watchedContent    = form.watch("content");
-  const watchedImageUrls  = form.watch("imageUrls");
-  const watchedDistIds    = form.watch("distributionListIds");
-  const watchedExtraIds   = form.watch("extraGroupIds");
-  const recurrenceType    = form.watch("recurrenceType");
-  const recurrenceDays    = form.watch("recurrenceDays");
+  const watchedImageUrls  = form.watch("imageUrls")  ?? [];
+  const watchedDistIds    = form.watch("distributionListIds") ?? [];
+  const watchedExtraIds   = form.watch("extraGroupIds") ?? "";
+  const recurrenceType    = form.watch("recurrenceType") ?? "none";
+  const recurrenceDays    = form.watch("recurrenceDays") ?? [];
   const contentLength     = watchedContent?.length ?? 0;
 
   const useExtension = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
