@@ -144,30 +144,53 @@ window.easyMarketingPost = async function (content, imageUrls, linkUrl, imageDat
   log("Waiting 2 s for Lexical to enable the פרסום button...");
   await sleep(2000);
 
-  const injected = (composer.textContent ?? "").includes(fullContent.slice(0, 15));
-  if (!injected) {
-    log("execCommand did not insert text — trying DataTransfer paste fallback...");
+  const checkInjected = () => (composer.textContent ?? "").includes(fullContent.slice(0, 15));
+
+  if (!checkInjected()) {
+    // ── Text fallback 1: setData paste ──────────────────────────────────────
+    log("execCommand did not insert text — trying DataTransfer setData paste...");
     composer.focus();
     await sleep(200);
-    const dt = new DataTransfer();
-    dt.setData("text/plain", fullContent);
+    const dtText = new DataTransfer();
+    dtText.setData("text/plain", fullContent);
     composer.dispatchEvent(
-      new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })
+      new ClipboardEvent("paste", { clipboardData: dtText, bubbles: true, cancelable: true })
     );
-    log("Paste dispatched. Waiting 2 s...");
+    log("setData paste dispatched — waiting 2 s...");
     await sleep(2000);
-
-    if (!(composer.textContent ?? "").includes(fullContent.slice(0, 15))) {
-      err("Both text injection methods failed.");
-      return {
-        success: false,
-        error: "Text injection failed (execCommand + paste both failed). See [EasyMarketing] logs.",
-      };
-    }
-    log("Paste fallback succeeded.");
-  } else {
-    log("Text injection confirmed ✓");
   }
+
+  if (!checkInjected()) {
+    // ── Text fallback 2: File-based paste (identical technique to image injection) ──
+    // Some Lexical builds ignore setData() but DO process files[] in the
+    // ClipboardEvent, which is the exact path used for image injection.
+    log("setData paste failed — trying File-based paste (text/plain File in DataTransfer)...");
+    try {
+      composer.focus();
+      await sleep(200);
+      const textBlob = new Blob([fullContent], { type: "text/plain" });
+      const textFile = new File([textBlob], "post_text.txt", { type: "text/plain" });
+      const dtFile = new DataTransfer();
+      dtFile.items.add(textFile);
+      dtFile.setData("text/plain", fullContent); // belt-and-suspenders
+      composer.dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: dtFile, bubbles: true, cancelable: true })
+      );
+      log("File-based paste dispatched — waiting 2 s...");
+      await sleep(2000);
+    } catch (e) {
+      warn("File-based paste error:", e.message);
+    }
+  }
+
+  if (!checkInjected()) {
+    err("All 3 text injection methods failed (execCommand / setData paste / File paste).");
+    return {
+      success: false,
+      error: "Text injection failed — execCommand, setData paste, and File paste all failed. See [EasyMarketing] logs.",
+    };
+  }
+  log("Text injection confirmed ✓");
 
   // Normalise: accept both legacy single string and new arrays
   if (!Array.isArray(imageUrls))    imageUrls    = imageUrls    ? [imageUrls]    : [];
