@@ -505,8 +505,15 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
                         lists={safeLists}
                         selectedIds={watchedDistIds}
                         extraGroupIds={watchedExtraIds}
-                        onChangeIds={(ids) => form.setValue("distributionListIds", ids)}
-                        onChangeExtra={(val) => form.setValue("extraGroupIds", val)}
+                        onChangeIds={(ids) =>
+                          form.setValue("distributionListIds", ids, {
+                            shouldDirty: true,
+                            shouldTouch: true,
+                          })
+                        }
+                        onChangeExtra={(val) =>
+                          form.setValue("extraGroupIds", val, { shouldDirty: true })
+                        }
                       />
                       <FormMessage />
                     </FormItem>

@@ -156,6 +156,8 @@ export async function createPostAction(
     (input.extraGroupIds?.length ?? 0) > 0;
 
   if (hasFanOut) {
+    console.log("[createPostAction] fan-out path — distributionListIds:", input.distributionListIds, "extraGroupIds:", input.extraGroupIds);
+
     // Collect group IDs from selected distribution lists
     let allGroupIds: string[] = [];
 
@@ -181,6 +183,8 @@ export async function createPostAction(
 
     // Deduplicate
     const uniqueGroupIds = [...new Set(allGroupIds.map((id) => id.trim()).filter(Boolean))];
+
+    console.log("[createPostAction] uniqueGroupIds:", uniqueGroupIds);
 
     if (uniqueGroupIds.length === 0) {
       return { error: "לא נמצאו מזהי קבוצות תקינים. בדוק את הרשימות והמזהים הידניים." };
