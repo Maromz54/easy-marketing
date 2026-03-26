@@ -1,20 +1,10 @@
 "use client";
 
 import { useTransition } from "react";
-import { Trash2, Loader2, ListChecks, Pencil } from "lucide-react";
+import { Trash2, Loader2, ListChecks, Pencil, Users } from "lucide-react";
 
 import { deleteDistributionListAction } from "@/actions/distribution-lists";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import type { Database } from "@/lib/supabase/types";
 
 export type DistributionListRow =
@@ -28,46 +18,31 @@ interface DistributionListsTableProps {
 export function DistributionListsTable({ lists, onEdit }: DistributionListsTableProps) {
   if (lists.length === 0) {
     return (
-      <Card className="border-dashed">
-        <CardContent className="py-10 flex flex-col items-center justify-center text-center gap-3">
-          <ListChecks className="h-10 w-10 text-muted-foreground/40" />
-          <p className="font-medium">אין רשימות תפוצה עדיין</p>
-          <p className="text-sm text-muted-foreground max-w-xs">
-            צור רשימה כדי לפרסם לעשרות קבוצות בלחיצה אחת.
-          </p>
-        </CardContent>
-      </Card>
+      <div className="bg-white rounded-2xl border border-dashed border-slate-300/60 py-14 flex flex-col items-center justify-center text-center gap-3">
+        <div className="h-14 w-14 rounded-2xl bg-slate-100 flex items-center justify-center">
+          <ListChecks className="h-7 w-7 text-slate-400" />
+        </div>
+        <p className="font-semibold text-slate-700">אין רשימות תפוצה עדיין</p>
+        <p className="text-sm text-slate-400 max-w-xs">
+          צור רשימה כדי לפרסם לעשרות קבוצות בלחיצה אחת.
+        </p>
+      </div>
     );
   }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base">הרשימות שלי</CardTitle>
-      </CardHeader>
-      <CardContent className="p-0">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>שם הרשימה</TableHead>
-              <TableHead>קבוצות</TableHead>
-              <TableHead>מזהי קבוצות</TableHead>
-              <TableHead>תאריך יצירה</TableHead>
-              <TableHead className="w-[100px]"></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {lists.map((list) => (
-              <ListRow key={list.id} list={list} onEdit={onEdit} />
-            ))}
-          </TableBody>
-        </Table>
-      </CardContent>
-    </Card>
+    <div className="space-y-4">
+      <h3 className="text-base font-semibold tracking-tight text-slate-900">הרשימות שלי</h3>
+      <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+        {lists.map((list) => (
+          <ListCard key={list.id} list={list} onEdit={onEdit} />
+        ))}
+      </div>
+    </div>
   );
 }
 
-function ListRow({ list, onEdit }: { list: DistributionListRow; onEdit?: (id: string) => void }) {
+function ListCard({ list, onEdit }: { list: DistributionListRow; onEdit?: (id: string) => void }) {
   const [isPending, startTransition] = useTransition();
 
   function handleDelete() {
@@ -77,48 +52,57 @@ function ListRow({ list, onEdit }: { list: DistributionListRow; onEdit?: (id: st
     });
   }
 
-  const groupIdPreview = list.group_ids.slice(0, 3).join(", ");
-  const overflow = list.group_ids.length > 3 ? ` +${list.group_ids.length - 3}` : "";
-
   return (
-    <TableRow className={isPending ? "opacity-50" : ""}>
-      <TableCell className="font-medium">{list.name}</TableCell>
-      <TableCell>
-        <Badge variant="secondary">{list.group_ids.length}</Badge>
-      </TableCell>
-      <TableCell className="text-xs text-muted-foreground font-mono max-w-[200px] truncate" dir="ltr">
-        {groupIdPreview}{overflow}
-      </TableCell>
-      <TableCell className="text-sm text-muted-foreground">
-        {new Date(list.created_at).toLocaleDateString("he-IL")}
-      </TableCell>
-      <TableCell>
-        <div className="flex gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onEdit?.(list.id)}
-            disabled={isPending}
-          >
-            <Pencil className="h-4 w-4" />
-            <span className="sr-only">ערוך</span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleDelete}
-            disabled={isPending}
-            className="text-destructive hover:text-destructive hover:bg-destructive/10"
-          >
-            {isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Trash2 className="h-4 w-4" />
-            )}
-            <span className="sr-only">מחק</span>
-          </Button>
+    <div className={`group bg-white rounded-2xl border border-slate-200/60 shadow-[0_1px_3px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.06)] hover:-translate-y-0.5 transition-all duration-300 ease-out overflow-hidden ${
+      isPending ? "opacity-50 pointer-events-none" : ""
+    }`}>
+      <div className="p-5">
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <h4 className="font-semibold text-slate-900 truncate">{list.name}</h4>
+          <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+            <button
+              onClick={() => onEdit?.(list.id)}
+              className="h-7 w-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-all duration-200"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={handleDelete}
+              className="h-7 w-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all duration-200"
+            >
+              {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            </button>
+          </div>
         </div>
-      </TableCell>
-    </TableRow>
+
+        <div className="flex items-center gap-2 text-sm text-slate-500">
+          <div className="h-7 w-7 rounded-lg bg-violet-50 flex items-center justify-center">
+            <Users className="h-3.5 w-3.5 text-violet-600" />
+          </div>
+          <span className="tabular-nums font-medium">{list.group_ids.length}</span>
+          <span>קבוצות</span>
+        </div>
+
+        <p className="mt-2 text-xs text-slate-400 font-mono truncate" dir="ltr">
+          {list.group_ids.slice(0, 3).join(", ")}
+          {list.group_ids.length > 3 && ` +${list.group_ids.length - 3}`}
+        </p>
+      </div>
+
+      <div className="px-5 py-3 bg-slate-50/50 border-t border-slate-100 flex items-center justify-between">
+        <span className="text-xs text-slate-400">
+          {new Date(list.created_at).toLocaleDateString("he-IL")}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onEdit?.(list.id)}
+          className="text-xs h-7 px-3 rounded-lg text-blue-600 hover:text-blue-700 hover:bg-blue-50 transition-all duration-200"
+        >
+          <Pencil className="h-3 w-3 ms-1" />
+          ערוך
+        </Button>
+      </div>
+    </div>
   );
 }

@@ -4,7 +4,6 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Send, Link2, Puzzle, ListChecks, LayoutTemplate, RefreshCw, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { ConnectedPages } from "./connected-pages";
 import { PostComposer } from "./post-composer";
@@ -24,18 +23,14 @@ type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["R
 type FacebookGroupRow = Database["public"]["Tables"]["facebook_groups"]["Row"];
 
 interface DashboardTabsProps {
-  // Posts tab
   pages: FbTokenRow[];
   posts: PostRow[];
   fbError: string | null;
   fbSuccess: string | null;
-  // Links tab
   links: LinkWithCount[];
   appUrl: string;
-  // Distribution lists tab
   distributionLists: DistributionListRow[];
   facebookGroups: FacebookGroupRow[];
-  // Templates tab
   templates: TemplateRow[];
 }
 
@@ -52,20 +47,16 @@ export function DashboardTabs({
 }: DashboardTabsProps) {
   const router = useRouter();
 
-  // Post editing
   const [editingPost, setEditingPost] = useState<PostRow | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [, startCancelTransition] = useTransition();
 
-  // Distribution list editing
   const [editingListId, setEditingListId] = useState<string | null>(null);
   const editingList = distributionLists.find((l) => l.id === editingListId) ?? null;
 
-  // Template loading into composer
   const [templateToLoad, setTemplateToLoad] = useState<TemplateRow | null>(null);
   const [activeTab, setActiveTab] = useState("posts");
 
-  // Sync state
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
@@ -101,7 +92,6 @@ export function DashboardTabs({
       setIsSyncing(false);
       return;
     }
-    // Poll every 5 seconds for up to 3 minutes for the sync job to complete
     let elapsed = 0;
     const poll = setInterval(() => {
       elapsed += 5000;
@@ -113,8 +103,6 @@ export function DashboardTabs({
       }
       router.refresh();
     }, 5000);
-    // Stop the spinner once we detect new groups (router.refresh re-renders with new data)
-    // We stop after 90 s as a reasonable timeout if data doesn't visibly change
     setTimeout(() => {
       clearInterval(poll);
       setIsSyncing(false);
@@ -125,55 +113,69 @@ export function DashboardTabs({
 
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-0">
-      {/* ── Tab bar ─────────────────────────────────────────────────── */}
-      <TabsList className="w-full sm:w-auto flex-wrap h-auto gap-1">
-        <TabsTrigger value="posts" className="flex items-center gap-2 flex-1 sm:flex-none">
+      {/* ── Pill-shaped tab bar ──────────────────────────────────────── */}
+      <TabsList className="w-full sm:w-auto flex-wrap h-auto gap-1 bg-slate-100/80 p-1 rounded-2xl border border-slate-200/60">
+        <TabsTrigger
+          value="posts"
+          className="flex items-center gap-2 flex-1 sm:flex-none rounded-xl px-4 py-2.5 text-sm font-medium text-slate-500 transition-all duration-200 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+        >
           <Send className="h-4 w-4" />
-          פרסום פוסטים
+          פרסום
         </TabsTrigger>
-        <TabsTrigger value="links" className="flex items-center gap-2 flex-1 sm:flex-none">
+        <TabsTrigger
+          value="links"
+          className="flex items-center gap-2 flex-1 sm:flex-none rounded-xl px-4 py-2.5 text-sm font-medium text-slate-500 transition-all duration-200 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+        >
           <Link2 className="h-4 w-4" />
-          ניהול קישורים
+          קישורים
           {links.length > 0 && (
-            <span className="ms-1 rounded-full bg-primary/15 text-primary px-1.5 py-0.5 text-xs tabular-nums">
+            <span className="ms-0.5 rounded-full bg-violet-100 text-violet-700 px-1.5 py-0.5 text-[10px] tabular-nums font-semibold leading-none">
               {links.length}
             </span>
           )}
         </TabsTrigger>
-        <TabsTrigger value="lists" className="flex items-center gap-2 flex-1 sm:flex-none">
+        <TabsTrigger
+          value="lists"
+          className="flex items-center gap-2 flex-1 sm:flex-none rounded-xl px-4 py-2.5 text-sm font-medium text-slate-500 transition-all duration-200 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+        >
           <ListChecks className="h-4 w-4" />
-          רשימות תפוצה
+          תפוצה
           {distributionLists.length > 0 && (
-            <span className="ms-1 rounded-full bg-primary/15 text-primary px-1.5 py-0.5 text-xs tabular-nums">
+            <span className="ms-0.5 rounded-full bg-violet-100 text-violet-700 px-1.5 py-0.5 text-[10px] tabular-nums font-semibold leading-none">
               {distributionLists.length}
             </span>
           )}
         </TabsTrigger>
-        <TabsTrigger value="templates" className="flex items-center gap-2 flex-1 sm:flex-none">
+        <TabsTrigger
+          value="templates"
+          className="flex items-center gap-2 flex-1 sm:flex-none rounded-xl px-4 py-2.5 text-sm font-medium text-slate-500 transition-all duration-200 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+        >
           <LayoutTemplate className="h-4 w-4" />
           תבניות
           {templates.length > 0 && (
-            <span className="ms-1 rounded-full bg-primary/15 text-primary px-1.5 py-0.5 text-xs tabular-nums">
+            <span className="ms-0.5 rounded-full bg-violet-100 text-violet-700 px-1.5 py-0.5 text-[10px] tabular-nums font-semibold leading-none">
               {templates.length}
             </span>
           )}
         </TabsTrigger>
-        <TabsTrigger value="extension" className="flex items-center gap-2 flex-1 sm:flex-none">
+        <TabsTrigger
+          value="extension"
+          className="flex items-center gap-2 flex-1 sm:flex-none rounded-xl px-4 py-2.5 text-sm font-medium text-slate-500 transition-all duration-200 data-[state=active]:bg-white data-[state=active]:text-slate-900 data-[state=active]:shadow-sm"
+        >
           <Puzzle className="h-4 w-4" />
-          חיבור תוסף
+          תוסף
         </TabsTrigger>
       </TabsList>
 
       {/* ── Posts tab ───────────────────────────────────────────────── */}
-      <TabsContent value="posts" className="space-y-8 mt-6">
+      <TabsContent value="posts" className="space-y-8 mt-8">
         <ConnectedPages pages={pages} errorMessage={fbError} successMessage={fbSuccess} />
-        <Separator />
-        <section className="space-y-4">
+        <section className="space-y-5">
           <div>
-            <h2 className="text-xl font-semibold">
+            <h2 className="text-xl font-semibold tracking-tight text-slate-900">
               {editingPost ? "עריכת פוסט" : "יצירת פוסט"}
             </h2>
-            <p className="text-sm text-muted-foreground mt-0.5">
+            <p className="text-sm text-slate-500 mt-0.5">
               {editingPost
                 ? "ערוך את תוכן הפוסט המתוזמן לפני שיפורסם"
                 : "כתוב פוסט ופרסם מיידית או תזמן לתאריך עתידי"}
@@ -188,7 +190,6 @@ export function DashboardTabs({
             onTemplateLoaded={() => setTemplateToLoad(null)}
           />
         </section>
-        <Separator />
         <PostsTable
           posts={posts}
           onEdit={handleEdit}
@@ -198,27 +199,26 @@ export function DashboardTabs({
       </TabsContent>
 
       {/* ── Links tab ───────────────────────────────────────────────── */}
-      <TabsContent value="links" className="space-y-8 mt-6">
-        <section className="space-y-4">
+      <TabsContent value="links" className="space-y-8 mt-8">
+        <section className="space-y-5">
           <div>
-            <h2 className="text-xl font-semibold">יצירת קישור חדש</h2>
-            <p className="text-sm text-muted-foreground mt-0.5">
+            <h2 className="text-xl font-semibold tracking-tight text-slate-900">יצירת קישור חדש</h2>
+            <p className="text-sm text-slate-500 mt-0.5">
               צור קישורים קצרים עם מעקב קליקים לוואטסאפ, דפי נחיתה ועוד
             </p>
           </div>
           <LinkForm appUrl={appUrl} />
         </section>
-        <Separator />
         <LinksTable links={links} appUrl={appUrl} />
       </TabsContent>
 
       {/* ── Distribution Lists tab ───────────────────────────────────── */}
-      <TabsContent value="lists" className="space-y-8 mt-6">
-        <section className="space-y-4">
+      <TabsContent value="lists" className="space-y-8 mt-8">
+        <section className="space-y-5">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
-              <h2 className="text-xl font-semibold">רשימות תפוצה</h2>
-              <p className="text-sm text-muted-foreground mt-0.5">
+              <h2 className="text-xl font-semibold tracking-tight text-slate-900">רשימות תפוצה</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
                 צור רשימות של קבוצות פייסבוק לפרסום מרובה בלחיצה אחת
               </p>
             </div>
@@ -227,25 +227,25 @@ export function DashboardTabs({
               size="sm"
               onClick={handleSyncGroups}
               disabled={isSyncing}
-              className="shrink-0"
+              className="shrink-0 rounded-xl border-slate-200 hover:bg-slate-50 transition-all duration-200"
             >
               {isSyncing ? (
-                <Loader2 className="h-4 w-4 animate-spin ms-1" />
+                <Loader2 className="h-4 w-4 animate-spin ms-1.5" />
               ) : (
-                <RefreshCw className="h-4 w-4 ms-1" />
+                <RefreshCw className="h-4 w-4 ms-1.5" />
               )}
               סנכרן קבוצות מ-Facebook
             </Button>
           </div>
 
           {syncMessage && (
-            <div className="rounded-md bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800">
+            <div className="rounded-xl bg-blue-50/80 border border-blue-200/60 px-4 py-3 text-sm text-blue-700">
               {syncMessage}
             </div>
           )}
 
           {facebookGroups.length > 0 && (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-slate-500">
               {facebookGroups.length} קבוצות מסונכרנות — בחר אותן ישירות בטופס יצירת הרשימה למטה.
             </p>
           )}
@@ -257,8 +257,6 @@ export function DashboardTabs({
           />
         </section>
 
-        <Separator />
-
         <DistributionListsTable
           lists={distributionLists}
           onEdit={(id) => setEditingListId(id)}
@@ -266,18 +264,18 @@ export function DashboardTabs({
       </TabsContent>
 
       {/* ── Templates tab ────────────────────────────────────────────── */}
-      <TabsContent value="templates" className="space-y-6 mt-6">
+      <TabsContent value="templates" className="space-y-6 mt-8">
         <div>
-          <h2 className="text-xl font-semibold">תבניות פוסטים</h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            שמור תכנים שבנית לשימוש חוזר. לחץ "שמור כתבנית" בעורך הפוסטים.
+          <h2 className="text-xl font-semibold tracking-tight text-slate-900">תבניות פוסטים</h2>
+          <p className="text-sm text-slate-500 mt-0.5">
+            שמור תכנים שבנית לשימוש חוזר. לחץ &quot;שמור כתבנית&quot; בעורך הפוסטים.
           </p>
         </div>
         <TemplatesTab templates={templates} onUseTemplate={handleUseTemplate} />
       </TabsContent>
 
       {/* ── Extension tab ────────────────────────────────────────────── */}
-      <TabsContent value="extension" className="mt-6">
+      <TabsContent value="extension" className="mt-8">
         <ExtensionTab appUrl={appUrl} />
       </TabsContent>
     </Tabs>

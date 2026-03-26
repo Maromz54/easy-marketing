@@ -221,10 +221,12 @@ async function checkForSyncJob(config) {
 
   console.log("[EasyMarketing] Sync job found — opening Facebook groups page...");
 
+  // Use /groups/joined/ — it lists all user groups in a clean layout,
+  // unlike /groups/feed/ which mixes posts with group cards.
   let tab;
   try {
     tab = await chrome.tabs.create({
-      url: "https://www.facebook.com/groups/feed/",
+      url: "https://www.facebook.com/groups/joined/",
       active: false,
     });
   } catch (err) {
@@ -240,16 +242,16 @@ async function checkForSyncJob(config) {
   }
 
   // Let the Facebook SPA render before we start scrolling
-  await sleep(5000);
+  await sleep(6000);
 
-  // ── Deep scroll: keep scrolling until the page height stops growing ──────
-  // Facebook lazy-loads groups as you scroll. We loop up to 20 times, waiting
-  // 2.5 s after each scroll for the network/DOM to settle. When the height
-  // hasn't grown since the last attempt we know all content is loaded.
-  const MAX_SCROLL_ATTEMPTS = 20;
-  const SCROLL_PAUSE_MS     = 2500;
+  // ── Deep-mine scroll ────────────────────────────────────────────────────
+  // Facebook aggressively lazy-loads the /groups/joined/ page. We keep
+  // scrolling until document.body.scrollHeight stops growing, up to a hard
+  // cap of 30 attempts with a 3.5 s wait between each scroll. This gives
+  // Facebook enough time to fetch the next batch and render it to the DOM.
+  const MAX_SCROLLS  = 30;
+  const SCROLL_WAIT  = 3500; // ms — generous pause for network + render
 
-  // Capture the starting height before the first scroll
   let prevHeight = 0;
   try {
     const [{ result }] = await chrome.scripting.executeScript({
@@ -259,15 +261,15 @@ async function checkForSyncJob(config) {
     prevHeight = result ?? 0;
   } catch { /* ignore — first comparison will always advance */ }
 
-  for (let attempt = 0; attempt < MAX_SCROLL_ATTEMPTS; attempt++) {
+  let stableCount = 0; // number of consecutive scrolls with no height change
+  for (let i = 0; i < MAX_SCROLLS; i++) {
     // Scroll to the very bottom
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => window.scrollTo(0, document.body.scrollHeight),
     }).catch(() => {});
 
-    // Wait for FB to fetch and render the next batch of groups
-    await sleep(SCROLL_PAUSE_MS);
+    await sleep(SCROLL_WAIT);
 
     // Read the new height
     let newHeight = 0;
@@ -279,17 +281,38 @@ async function checkForSyncJob(config) {
       newHeight = result ?? 0;
     } catch { break; }
 
-    console.log(`[EasyMarketing] Scroll ${attempt + 1}/${MAX_SCROLL_ATTEMPTS}: ${prevHeight}px → ${newHeight}px`);
+    console.log(`[EasyMarketing] Scroll ${i + 1}/${MAX_SCROLLS}: ${prevHeight}px → ${newHeight}px`);
 
     if (newHeight <= prevHeight) {
-      // Height didn't grow — all groups are in the DOM
-      console.log("[EasyMarketing] Page height stabilized — all groups loaded.");
-      break;
+      stableCount++;
+      // Require 2 consecutive stable readings to be sure — FB can pause
+      // between lazy-load batches.
+      if (stableCount >= 2) {
+        console.log("[EasyMarketing] Page height stable for 2 consecutive scrolls — all groups loaded.");
+        break;
+      }
+    } else {
+      stableCount = 0;
+      prevHeight = newHeight;
     }
-    prevHeight = newHeight;
   }
 
-  // Scrape all group links with numeric IDs
+  // Final scroll back to top, then to bottom one more time — some FB pages
+  // only render elements that were in the viewport at least once.
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => { window.scrollTo(0, 0); },
+  }).catch(() => {});
+  await sleep(1000);
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => { window.scrollTo(0, document.body.scrollHeight); },
+  }).catch(() => {});
+  await sleep(2000);
+
+  // ── DOM extraction ──────────────────────────────────────────────────────
+  // /groups/joined/ renders groups as link elements with /groups/<id>/ hrefs.
+  // We use multiple selector strategies to maximise coverage.
   let groups = [];
   try {
     const [{ result }] = await chrome.scripting.executeScript({
@@ -297,18 +320,50 @@ async function checkForSyncJob(config) {
       func: () => {
         const results = [];
         const seen = new Set();
+
+        // Strategy 1: All anchor links with /groups/<numeric>/
         for (const link of document.querySelectorAll('a[href*="/groups/"]')) {
-          const match = link.href.match(/\/groups\/(\d{5,})\//);
+          const match = link.href.match(/\/groups\/(\d{5,})\b/);
           if (!match) continue;
           const groupId = match[1];
           if (seen.has(groupId)) continue;
           seen.add(groupId);
-          const container = link.closest('[role="listitem"]') ?? link.parentElement;
-          const heading = container?.querySelector('[role="heading"], span[dir="auto"]');
-          const name = heading?.textContent?.trim() || link.textContent?.trim() || `Group ${groupId}`;
-          const img = container?.querySelector("img[src]");
+
+          // Walk up to find the containing card / row
+          const card = link.closest('[role="listitem"], [role="article"]')
+                    ?? link.closest('[data-visualcompletion]')
+                    ?? link.parentElement?.parentElement?.parentElement
+                    ?? link.parentElement;
+
+          // Name: try heading roles, then spans with dir="auto", then link text
+          const heading = card?.querySelector('[role="heading"]')
+                       ?? card?.querySelector('span[dir="auto"]');
+          let name = heading?.textContent?.trim() || "";
+          if (!name || name.length < 2) {
+            // Fallback: use the link's own text, skip if it's a URL fragment
+            const lt = link.textContent?.trim() ?? "";
+            name = (lt && !lt.startsWith("http") && lt.length > 1) ? lt : `Group ${groupId}`;
+          }
+
+          // Icon
+          const img = card?.querySelector('img[src*="scontent"]')
+                   ?? card?.querySelector('img[src]');
+          const iconUrl = img?.getAttribute("src") ?? null;
+
+          results.push({ groupId, name, iconUrl });
+        }
+
+        // Strategy 2: Catch any groups rendered in sidebar or other widgets
+        // that use data-attributes instead of standard anchor patterns
+        for (const el of document.querySelectorAll('[data-groupid]')) {
+          const groupId = el.getAttribute("data-groupid");
+          if (!groupId || !/^\d{5,}$/.test(groupId) || seen.has(groupId)) continue;
+          seen.add(groupId);
+          const name = el.textContent?.trim() || `Group ${groupId}`;
+          const img = el.querySelector("img[src]");
           results.push({ groupId, name, iconUrl: img?.src ?? null });
         }
+
         return results;
       },
     });

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Loader2, ListChecks, CheckCircle2, Pencil } from "lucide-react";
+import { Loader2, ListChecks, CheckCircle2, Pencil, Search } from "lucide-react";
 
 import {
   createDistributionListAction,
@@ -13,9 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import {
   Form,
   FormControl,
@@ -25,15 +23,11 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Separator } from "@/components/ui/separator";
 import type { Database } from "@/lib/supabase/types";
 
 type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["Row"];
 type FacebookGroupRow = Database["public"]["Tables"]["facebook_groups"]["Row"];
 
-// ── Schema ────────────────────────────────────────────────────────────────────
-// groupIdsRaw is optional — the user can select groups via checkboxes instead.
-// Any IDs entered manually must still be numeric.
 const distributionListSchema = z.object({
   name: z
     .string()
@@ -41,7 +35,7 @@ const distributionListSchema = z.object({
     .max(100, { message: "השם ארוך מדי (מקסימום 100 תווים)." }),
   groupIdsRaw: z.string().refine(
     (v) => {
-      if (!v.trim()) return true; // empty is fine — checkboxes cover it
+      if (!v.trim()) return true;
       return v
         .split(",")
         .map((s) => s.trim())
@@ -54,7 +48,6 @@ const distributionListSchema = z.object({
 
 type DistributionListFormValues = z.infer<typeof distributionListSchema>;
 
-// ── Component ─────────────────────────────────────────────────────────────────
 interface DistributionListFormProps {
   editingList?: DistributionListRow | null;
   onEditDone?: () => void;
@@ -73,7 +66,6 @@ export function DistributionListForm({
   const [successName, setSuccessName] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  // Visual group picker state (outside Zod — local UI state)
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [groupSearch, setGroupSearch] = useState("");
 
@@ -90,12 +82,8 @@ export function DistributionListForm({
     defaultValues: { name: "", groupIdsRaw: "" },
   });
 
-  // Pre-fill when entering edit mode
   useEffect(() => {
     if (editingList) {
-      // Split the stored group_ids into checkbox selections vs. manual overflow.
-      // Groups that exist in the synced list → pre-check their boxes.
-      // The rest (manually entered IDs not in the synced list) → put in the textarea.
       const syncedIds = new Set(safeGroups.map((g) => g.group_id));
       const preChecked = editingList.group_ids.filter((id) => syncedIds.has(id));
       const manualOnly = editingList.group_ids.filter((id) => !syncedIds.has(id));
@@ -122,11 +110,15 @@ export function DistributionListForm({
     );
   }
 
+  function selectAll() {
+    const allIds = filteredGroups.map((g) => g.group_id);
+    setSelectedGroupIds((prev) => [...new Set([...prev, ...allIds])]);
+  }
+
   function onSubmit(values: DistributionListFormValues) {
     setServerError(null);
     setSuccessName(null);
 
-    // Combine checkbox selections with manually entered IDs
     const manualIds = values.groupIdsRaw
       .split(",")
       .map((s) => s.trim())
@@ -171,163 +163,195 @@ export function DistributionListForm({
   }
 
   return (
-    <Card className={isEditing ? "border-primary/40 bg-primary/5" : ""}>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-lg">
+    <div className={`bg-white rounded-2xl border shadow-[0_1px_3px_rgb(0,0,0,0.04)] overflow-hidden transition-all duration-300 ${
+      isEditing ? "border-blue-200 shadow-[0_4px_20px_rgb(59,130,246,0.08)]" : "border-slate-200/60"
+    }`}>
+      {/* Header */}
+      <div className="px-6 py-5 border-b border-slate-100">
+        <div className="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-slate-900">
           {isEditing ? (
-            <>
-              <Pencil className="h-5 w-5 text-primary" />
-              עריכת רשימה: {editingList?.name}
-            </>
+            <div className="h-8 w-8 rounded-xl bg-amber-50 flex items-center justify-center">
+              <Pencil className="h-4 w-4 text-amber-600" />
+            </div>
           ) : (
-            <>
-              <ListChecks className="h-5 w-5 text-primary" />
-              יצירת רשימת תפוצה חדשה
-            </>
+            <div className="h-8 w-8 rounded-xl bg-violet-50 flex items-center justify-center">
+              <ListChecks className="h-4 w-4 text-violet-600" />
+            </div>
           )}
-        </CardTitle>
-      </CardHeader>
+          {isEditing ? `עריכת רשימה: ${editingList?.name}` : "יצירת רשימת תפוצה חדשה"}
+        </div>
+      </div>
 
-      <CardContent className="space-y-4">
-        {/* Success (create only) */}
+      <div className="p-6 space-y-5">
+        {/* Success */}
         {successName && (
-          <div className="flex items-center gap-2 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
+          <div className="flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>הרשימה <strong>{successName}</strong> נוצרה בהצלחה!</span>
           </div>
         )}
 
-        {/* Server error */}
         {serverError && (
-          <div className="rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">
+          <div className="rounded-xl bg-red-50/60 border border-red-100 px-4 py-3 text-sm text-red-600">
             {serverError}
           </div>
         )}
 
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
 
-            {/* List name */}
             <FormField
               control={form.control}
               name="name"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>שם הרשימה</FormLabel>
+                  <FormLabel className="text-slate-700">שם הרשימה</FormLabel>
                   <FormControl>
-                    <Input placeholder='למשל: "קבוצות נדל״ן בצפון"' {...field} />
+                    <Input
+                      placeholder='למשל: "קבוצות נדל״ן בצפון"'
+                      className="rounded-xl border-slate-200 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300 transition-all duration-200"
+                      {...field}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
             />
 
-            {/* ── Visual group picker (shown only when synced groups exist) ── */}
+            {/* ── Premium group gallery ─────────────────────────────────── */}
             {safeGroups.length > 0 && (
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <Label className="text-sm font-medium">
-                    בחר קבוצות מסונכרנות ({safeGroups.length})
-                  </Label>
-                  {selectedGroupIds.length > 0 && (
-                    <span className="text-xs text-purple-700 font-medium">
-                      {selectedGroupIds.length} נבחרו
+                  <span className="text-sm font-medium text-slate-700">
+                    בחר קבוצות מסונכרנות
+                  </span>
+                  <div className="flex items-center gap-3">
+                    {selectedGroupIds.length > 0 && (
+                      <button
+                        type="button"
+                        className="text-xs text-slate-400 hover:text-slate-600 transition-colors duration-200"
+                        onClick={() => setSelectedGroupIds([])}
+                      >
+                        נקה הכל
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="text-xs text-blue-600 hover:text-blue-700 font-medium transition-colors duration-200"
+                      onClick={selectAll}
+                    >
+                      בחר הכל
+                    </button>
+                    <span className="text-xs tabular-nums bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full font-semibold">
+                      {selectedGroupIds.length} / {safeGroups.length}
                     </span>
-                  )}
+                  </div>
                 </div>
 
-                <Input
-                  placeholder="חפש קבוצה לפי שם או מזהה..."
-                  dir="rtl"
-                  className="h-8 text-xs"
-                  value={groupSearch}
-                  onChange={(e) => setGroupSearch(e.target.value)}
-                />
+                {/* Search */}
+                <div className="relative">
+                  <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <Input
+                    placeholder="חפש קבוצה..."
+                    dir="rtl"
+                    className="h-9 text-sm rounded-xl border-slate-200 ps-9 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300 transition-all duration-200"
+                    value={groupSearch}
+                    onChange={(e) => setGroupSearch(e.target.value)}
+                  />
+                </div>
 
-                <div className="rounded-md border border-input bg-muted/30 max-h-60 overflow-y-auto divide-y divide-border">
+                {/* Grid */}
+                <div className="rounded-2xl border border-slate-200/60 bg-slate-50/30 max-h-72 overflow-y-auto">
                   {filteredGroups.length === 0 ? (
-                    <p className="px-3 py-3 text-xs text-muted-foreground">לא נמצאו קבוצות</p>
+                    <p className="px-4 py-8 text-center text-sm text-slate-400">לא נמצאו קבוצות</p>
                   ) : (
-                    filteredGroups.map((group) => {
-                      const checked = selectedGroupIds.includes(group.group_id);
-                      return (
-                        <label
-                          key={group.group_id}
-                          htmlFor={`fg-${group.group_id}`}
-                          className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer transition-colors hover:bg-muted/60 ${
-                            checked ? "bg-purple-50/60" : ""
-                          }`}
-                        >
-                          <Checkbox
-                            id={`fg-${group.group_id}`}
-                            checked={checked}
-                            onCheckedChange={() => toggleGroup(group.group_id)}
-                          />
-                          {group.icon_url && (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={group.icon_url}
-                              alt=""
-                              className="h-7 w-7 rounded-full object-cover shrink-0"
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-slate-200/40">
+                      {filteredGroups.map((group) => {
+                        const checked = selectedGroupIds.includes(group.group_id);
+                        return (
+                          <label
+                            key={group.group_id}
+                            htmlFor={`fg-${group.group_id}`}
+                            className={`flex items-center gap-3 px-3.5 py-3 cursor-pointer transition-all duration-200 ${
+                              checked
+                                ? "bg-blue-50/70"
+                                : "bg-white hover:bg-slate-50/80"
+                            }`}
+                          >
+                            <Checkbox
+                              id={`fg-${group.group_id}`}
+                              checked={checked}
+                              onCheckedChange={() => toggleGroup(group.group_id)}
+                              className="transition-all duration-200"
                             />
-                          )}
-                          <span className="flex-1 min-w-0">
-                            <span className="block text-sm truncate">{group.name}</span>
-                            <span className="text-xs text-muted-foreground font-mono">
-                              {group.group_id}
+                            <div className={`h-9 w-9 rounded-xl shrink-0 overflow-hidden bg-slate-100 flex items-center justify-center transition-all duration-200 ${
+                              checked ? "ring-2 ring-blue-400/40" : ""
+                            }`}>
+                              {group.icon_url ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={group.icon_url}
+                                  alt=""
+                                  className="h-full w-full object-cover"
+                                />
+                              ) : (
+                                <span className="text-xs font-bold text-slate-400">
+                                  {group.name.charAt(0)}
+                                </span>
+                              )}
+                            </div>
+                            <span className="flex-1 min-w-0">
+                              <span className="block text-sm font-medium text-slate-700 truncate">
+                                {group.name}
+                              </span>
+                              <span className="text-[11px] text-slate-400 font-mono">
+                                {group.group_id}
+                              </span>
                             </span>
-                          </span>
-                        </label>
-                      );
-                    })
+                          </label>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
-
-                {selectedGroupIds.length > 0 && (
-                  <button
-                    type="button"
-                    className="text-xs text-muted-foreground underline-offset-2 hover:underline"
-                    onClick={() => setSelectedGroupIds([])}
-                  >
-                    נקה בחירה
-                  </button>
-                )}
               </div>
             )}
 
-            {/* Manual group IDs (fallback / extra) */}
+            {/* Manual IDs */}
             <FormField
               control={form.control}
               name="groupIdsRaw"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>
+                  <FormLabel className="text-slate-700">
                     {safeGroups.length > 0
                       ? "מזהי קבוצות נוספים (אופציונלי)"
                       : "מזהי קבוצות (מופרדים בפסיק)"}
                   </FormLabel>
                   <FormControl>
                     <Textarea
-                      placeholder="123456789012345, 987654321098765, 112233445566778"
+                      placeholder="123456789012345, 987654321098765"
                       dir="ltr"
-                      className="min-h-[64px] font-mono text-sm"
+                      className="min-h-[56px] font-mono text-sm rounded-xl border-slate-200 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300 transition-all duration-200"
                       {...field}
                     />
                   </FormControl>
-                  <FormDescription className="text-xs">
+                  <FormDescription className="text-xs text-slate-400">
                     {safeGroups.length > 0
                       ? "הדבק כאן מזהי קבוצות שאינם ברשימה המסונכרנת."
-                      : "הזן את מזהי קבוצות הפייסבוק מופרדים בפסיקים. המזהה מופיע בכתובת הקבוצה (מספרים בלבד)."}
+                      : "הזן את מזהי קבוצות הפייסבוק מופרדים בפסיקים."}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
             />
 
-            <Separator />
-
-            <div className="flex gap-2">
-              <Button type="submit" disabled={isPending} className="w-full sm:w-auto">
+            <div className="flex gap-2.5 pt-1">
+              <Button
+                type="submit"
+                disabled={isPending}
+                className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm hover:shadow-md transition-all duration-200"
+              >
                 {isPending ? (
                   <>
                     <Loader2 className="ms-2 h-4 w-4 animate-spin" />
@@ -341,14 +365,20 @@ export function DistributionListForm({
                 )}
               </Button>
               {isEditing && (
-                <Button type="button" variant="outline" onClick={onEditDone} disabled={isPending}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onEditDone}
+                  disabled={isPending}
+                  className="rounded-xl border-slate-200 hover:bg-slate-50 transition-all duration-200"
+                >
                   ביטול
                 </Button>
               )}
             </div>
           </form>
         </Form>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

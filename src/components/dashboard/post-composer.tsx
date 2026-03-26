@@ -28,7 +28,6 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Database } from "@/lib/supabase/types";
 import type { PostRow } from "@/components/dashboard/posts-table";
 
@@ -417,14 +416,18 @@ export function PostComposer({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between gap-2 text-lg">
-          <span className="flex items-center gap-2">
+    <div className="bg-white rounded-2xl border border-slate-200/60 shadow-[0_1px_3px_rgb(0,0,0,0.04)] overflow-hidden">
+      <div className="px-6 py-5 border-b border-slate-100">
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-slate-900">
             {isEditing ? (
-              <Pencil className="h-5 w-5 text-primary" />
+              <div className="h-8 w-8 rounded-xl bg-amber-50 flex items-center justify-center">
+                <Pencil className="h-4 w-4 text-amber-600" />
+              </div>
             ) : (
-              <Send className="h-5 w-5 text-primary" />
+              <div className="h-8 w-8 rounded-xl bg-blue-50 flex items-center justify-center">
+                <Send className="h-4 w-4 text-blue-600" />
+              </div>
             )}
             {isEditing ? "עריכת פוסט" : "כתיבת פוסט חדש"}
           </span>
@@ -433,20 +436,20 @@ export function PostComposer({
               type="button"
               variant="ghost"
               size="sm"
-              className="text-muted-foreground text-xs"
+              className="text-slate-400 hover:text-slate-600 text-xs rounded-xl"
               onClick={onEditDone}
             >
               <X className="h-3.5 w-3.5 ms-1" />
               ביטול עריכה
             </Button>
           )}
-        </CardTitle>
-      </CardHeader>
+        </div>
+      </div>
 
-      <CardContent>
+      <div className="p-6">
         {/* Notices */}
         {!isEditing && useExtension && !useDistList && (
-          <div className="mb-5 flex items-start gap-2.5 rounded-md bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-800">
+          <div className="mb-5 flex items-start gap-2.5 rounded-xl bg-blue-50/60 border border-blue-100 px-4 py-3 text-sm text-blue-700">
             <Puzzle className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
               הפוסט יישמר במסד הנתונים ויפורסם על ידי{" "}
@@ -456,7 +459,7 @@ export function PostComposer({
         )}
 
         {!isEditing && useDistList && (
-          <div className="mb-5 flex items-start gap-2.5 rounded-md bg-purple-50 border border-purple-200 px-4 py-3 text-sm text-purple-800">
+          <div className="mb-5 flex items-start gap-2.5 rounded-xl bg-violet-50/60 border border-violet-100 px-4 py-3 text-sm text-violet-700">
             <ListChecks className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
               הפוסט יפורסם ל-<strong>{totalGroupCount} קבוצות ייחודיות</strong> —
@@ -466,7 +469,7 @@ export function PostComposer({
         )}
 
         {isSuccess && (
-          <div className="mb-4 flex items-center gap-2 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
+          <div className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>
               {successCount && successCount > 1
@@ -479,14 +482,14 @@ export function PostComposer({
         )}
 
         {templateSaved && (
-          <div className="mb-4 flex items-center gap-2 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
+          <div className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             התבנית נשמרה בהצלחה! תמצא אותה בלשונית התבניות.
           </div>
         )}
 
         {serverError && (
-          <div className="mb-4 rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">
+          <div className="mb-4 rounded-xl bg-red-50/60 border border-red-100 px-4 py-3 text-sm text-red-600">
             {serverError}
           </div>
         )}
@@ -654,7 +657,7 @@ export function PostComposer({
                             <img
                               src={url}
                               alt={`תמונה ${idx + 1}`}
-                              className="h-20 w-20 rounded-md object-cover border"
+                              className="h-20 w-20 rounded-xl object-cover border border-slate-200/60"
                             />
                             <button
                               type="button"
@@ -736,31 +739,31 @@ export function PostComposer({
                       >
                         <label
                           htmlFor="mode-now"
-                          className={`flex items-center gap-2.5 cursor-pointer rounded-lg border px-4 py-3 transition-colors ${
+                          className={`flex items-center gap-2.5 cursor-pointer rounded-xl border px-4 py-3 transition-all duration-200 ${
                             field.value === "now"
-                              ? "border-primary bg-primary/5"
-                              : "border-input hover:border-muted-foreground/40"
+                              ? "border-blue-200 bg-blue-50/50 shadow-sm"
+                              : "border-slate-200 hover:border-slate-300"
                           }`}
                         >
                           <RadioGroupItem value="now" id="mode-now" />
                           <div>
-                            <p className="text-sm font-medium">פרסם עכשיו</p>
-                            <p className="text-xs text-muted-foreground">יישמר ויפורסם בדקה הקרובה</p>
+                            <p className="text-sm font-medium text-slate-900">פרסם עכשיו</p>
+                            <p className="text-xs text-slate-500">יישמר ויפורסם בדקה הקרובה</p>
                           </div>
                         </label>
 
                         <label
                           htmlFor="mode-scheduled"
-                          className={`flex items-center gap-2.5 cursor-pointer rounded-lg border px-4 py-3 transition-colors ${
+                          className={`flex items-center gap-2.5 cursor-pointer rounded-xl border px-4 py-3 transition-all duration-200 ${
                             field.value === "scheduled"
-                              ? "border-primary bg-primary/5"
-                              : "border-input hover:border-muted-foreground/40"
+                              ? "border-blue-200 bg-blue-50/50 shadow-sm"
+                              : "border-slate-200 hover:border-slate-300"
                           }`}
                         >
                           <RadioGroupItem value="scheduled" id="mode-scheduled" />
                           <div>
-                            <p className="text-sm font-medium">תזמן לעתיד</p>
-                            <p className="text-xs text-muted-foreground">בחר תאריך ושעה</p>
+                            <p className="text-sm font-medium text-slate-900">תזמן לעתיד</p>
+                            <p className="text-xs text-slate-500">בחר תאריך ושעה</p>
                           </div>
                         </label>
                       </RadioGroup>
@@ -793,7 +796,7 @@ export function PostComposer({
                   />
 
                   {/* Recurrence section */}
-                  <div className="rounded-md border border-input px-4 py-3 space-y-3">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/40 px-4 py-3 space-y-3">
                     <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                       <RefreshCw className="h-3.5 w-3.5" />
                       חזרה (אופציונלי)
@@ -874,8 +877,12 @@ export function PostComposer({
               )}
 
               {/* Submit row */}
-              <div className="flex flex-wrap gap-2">
-                <Button type="submit" className="w-full sm:w-auto" disabled={isPending || isUploading}>
+              <div className="flex flex-wrap gap-2.5 pt-1">
+                <Button
+                  type="submit"
+                  className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm hover:shadow-md transition-all duration-200"
+                  disabled={isPending || isUploading}
+                >
                   {isPending ? (
                     <><Loader2 className="ms-2 h-4 w-4 animate-spin" />שומר...</>
                   ) : isEditing ? (
@@ -891,7 +898,7 @@ export function PostComposer({
                   <Button
                     type="button"
                     variant="outline"
-                    className="w-full sm:w-auto"
+                    className="w-full sm:w-auto rounded-xl border-slate-200 hover:bg-slate-50 transition-all duration-200"
                     disabled={isPending || isUploading}
                     onClick={() => {
                       const values = form.getValues();
@@ -928,7 +935,7 @@ export function PostComposer({
           </div>
 
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
