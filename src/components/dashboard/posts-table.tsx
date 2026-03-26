@@ -1,9 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { FileText, AlertCircle, Pencil, X, Loader2, RefreshCw } from "lucide-react";
+import { useState, useTransition } from "react";
+import {
+  FileText, AlertCircle, Pencil, Loader2, RefreshCw, X, Trash2,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  cancelScheduledPostAction,
+  deletePostAction,
+} from "@/actions/posts";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface PostRow {
@@ -23,8 +29,6 @@ export interface PostRow {
 interface PostsTableProps {
   posts: PostRow[];
   onEdit: (post: PostRow) => void;
-  onCancel: (postId: string) => void;
-  cancellingId: string | null;
   onResumeDraft?: (post: PostRow) => void;
 }
 
@@ -59,7 +63,7 @@ const STATUS_CONFIG = {
 type FilterKey = "all" | "published" | "scheduled" | "draft";
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export function PostsTable({ posts, onEdit, onCancel, cancellingId, onResumeDraft }: PostsTableProps) {
+export function PostsTable({ posts, onEdit, onResumeDraft }: PostsTableProps) {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
 
   const counts: Record<FilterKey, number> = {
@@ -130,9 +134,7 @@ export function PostsTable({ posts, onEdit, onCancel, cancellingId, onResumeDraf
             {activeFilter === "all" ? "אין פוסטים עדיין" : "אין פוסטים בקטגוריה זו"}
           </p>
           <p className="text-sm text-slate-400 max-w-xs">
-            {activeFilter === "all"
-              ? "הפוסטים שתיצור יופיעו כאן"
-              : "נסה לבחור קטגוריה אחרת"}
+            {activeFilter === "all" ? "הפוסטים שתיצור יופיעו כאן" : "נסה לבחור קטגוריה אחרת"}
           </p>
         </div>
       ) : (
@@ -142,8 +144,6 @@ export function PostsTable({ posts, onEdit, onCancel, cancellingId, onResumeDraf
               key={post.id}
               post={post}
               onEdit={onEdit}
-              onCancel={onCancel}
-              cancellingId={cancellingId}
               onResumeDraft={onResumeDraft}
             />
           ))}
@@ -157,18 +157,14 @@ export function PostsTable({ posts, onEdit, onCancel, cancellingId, onResumeDraf
 function PostCard({
   post,
   onEdit,
-  onCancel,
-  cancellingId,
   onResumeDraft,
 }: {
   post: PostRow;
   onEdit: (post: PostRow) => void;
-  onCancel: (postId: string) => void;
-  cancellingId: string | null;
   onResumeDraft?: (post: PostRow) => void;
 }) {
+  const [isPending, startTransition] = useTransition();
   const config = STATUS_CONFIG[post.status] ?? STATUS_CONFIG.draft;
-  const isCancelling = cancellingId === post.id;
   const preview =
     post.content.length > 180 ? post.content.slice(0, 180) + "…" : post.content;
 
@@ -194,12 +190,25 @@ function PostCard({
       ? "שבועי"
       : null;
 
+  function handleCancelToDraft() {
+    startTransition(async () => {
+      await cancelScheduledPostAction(post.id);
+    });
+  }
+
+  function handleDelete() {
+    if (!window.confirm("האם למחוק טיוטה זו לצמיתות?")) return;
+    startTransition(async () => {
+      await deletePostAction(post.id);
+    });
+  }
+
   const hasActions = post.status === "scheduled" || post.status === "draft";
 
   return (
     <div
       className={`group bg-white rounded-2xl border border-slate-200/60 shadow-[0_1px_3px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.06)] hover:-translate-y-0.5 transition-all duration-300 ease-out overflow-hidden ${
-        isCancelling ? "opacity-50 pointer-events-none" : ""
+        isPending ? "opacity-50 pointer-events-none" : ""
       }`}
     >
       <div className="p-5">
@@ -230,7 +239,7 @@ function PostCard({
           </div>
         )}
 
-        {/* Meta row */}
+        {/* Meta chips */}
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
           {post.facebook_tokens?.page_name && (
             <span className="bg-slate-100/70 rounded-lg px-2 py-0.5">
@@ -253,18 +262,9 @@ function PostCard({
       {/* Actions footer */}
       {hasActions && (
         <div className="px-5 py-3 bg-slate-50/50 border-t border-slate-100 flex items-center gap-2">
-          {post.status === "draft" && (
-            <Button
-              size="sm"
-              onClick={() => onResumeDraft?.(post)}
-              className="flex-1 sm:flex-none rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm hover:shadow-md transition-all duration-200 text-xs"
-            >
-              <RefreshCw className="h-3.5 w-3.5 ms-1.5" />
-              המשך עריכה
-            </Button>
-          )}
           {post.status === "scheduled" && (
             <>
+              {/* Edit scheduled post */}
               <button
                 onClick={() => onEdit(post)}
                 className="flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 transition-all duration-200"
@@ -272,17 +272,46 @@ function PostCard({
                 <Pencil className="h-3.5 w-3.5" />
                 ערוך
               </button>
+              {/* Cancel → draft */}
               <button
-                onClick={() => onCancel(post.id)}
-                disabled={isCancelling}
-                className="flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-slate-400 hover:text-red-600 hover:bg-red-50 transition-all duration-200"
+                onClick={handleCancelToDraft}
+                disabled={isPending}
+                className="flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-all duration-200"
+                title="הפוך לטיוטה"
               >
-                {isCancelling ? (
+                {isPending ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <X className="h-3.5 w-3.5" />
                 )}
-                בטל
+                בטל תזמון
+              </button>
+            </>
+          )}
+
+          {post.status === "draft" && (
+            <>
+              {/* Resume draft into composer */}
+              <Button
+                size="sm"
+                onClick={() => onResumeDraft?.(post)}
+                className="flex-1 sm:flex-none rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm hover:shadow-md transition-all duration-200 text-xs"
+              >
+                <RefreshCw className="h-3.5 w-3.5 ms-1.5" />
+                המשך עריכה
+              </Button>
+              {/* Delete draft */}
+              <button
+                onClick={handleDelete}
+                disabled={isPending}
+                className="h-8 w-8 rounded-xl flex items-center justify-center text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all duration-200 shrink-0"
+                title="מחק טיוטה"
+              >
+                {isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
               </button>
             </>
           )}

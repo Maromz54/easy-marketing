@@ -118,6 +118,79 @@ export async function deleteTemplateAction(
   return { success: true };
 }
 
+// ── cancelScheduledPostAction ──────────────────────────────────────────────────
+// Converts a scheduled post back to a draft (removes scheduled_at) so the user
+// can edit, re-schedule, or delete it without losing the content.
+
+export async function cancelScheduledPostAction(
+  postId: string
+): Promise<{ success?: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  const { data: existing } = await supabase
+    .from("posts")
+    .select("id")
+    .eq("id", postId)
+    .eq("user_id", user.id)
+    .eq("status", "scheduled")
+    .maybeSingle();
+
+  if (!existing) {
+    return { error: "הפוסט לא נמצא, אינו בבעלותך, או שאינו מתוזמן." };
+  }
+
+  const { error: dbError } = await supabase
+    .from("posts")
+    .update({ status: "draft", scheduled_at: null })
+    .eq("id", postId);
+
+  if (dbError) {
+    console.error("[cancelScheduledPostAction] DB error:", dbError);
+    return { error: "שגיאה בביטול הפוסט. אנא נסה שוב." };
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
+// ── deletePostAction ────────────────────────────────────────────────────────────
+// Permanently deletes a draft post. Only drafts can be deleted this way.
+
+export async function deletePostAction(
+  postId: string
+): Promise<{ success?: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  const { data: existing } = await supabase
+    .from("posts")
+    .select("id")
+    .eq("id", postId)
+    .eq("user_id", user.id)
+    .eq("status", "draft")
+    .maybeSingle();
+
+  if (!existing) {
+    return { error: "הפוסט לא נמצא, אינו בבעלותך, או שאינו טיוטה." };
+  }
+
+  const { error: dbError } = await supabase
+    .from("posts")
+    .delete()
+    .eq("id", postId);
+
+  if (dbError) {
+    console.error("[deletePostAction] DB error:", dbError);
+    return { error: "שגיאה במחיקת הפוסט. אנא נסה שוב." };
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
 // ── cancelPostAction ───────────────────────────────────────────────────────────
 
 export async function cancelPostAction(postId: string): Promise<CancelPostResult> {

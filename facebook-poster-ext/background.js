@@ -244,110 +244,126 @@ async function checkForSyncJob(config) {
   // Let the Facebook SPA render before we start scrolling
   await sleep(6000);
 
-  // ── Virtualization-safe scroll + in-loop accumulation ───────────────────
-  // Facebook virtualizes /groups/joined/ — older DOM nodes are REMOVED while
-  // the user scrolls. We must extract groups after EVERY scroll step and
-  // accumulate them in a Map so early groups aren't lost when FB discards them.
-  const MAX_SCROLLS = 40;   // Higher cap for large group lists (100+)
-  const SCROLL_WAIT = 3000; // ms — generous pause for FB lazy-load + render
-
-  // Persistent accumulator keyed by groupId to deduplicate across scroll steps
-  const accumulated = new Map(); // groupId → { groupId, name, iconUrl }
-
-  // Self-contained extraction function injected into the page at each step.
-  // Must have NO closures over background-scope variables.
-  const EXTRACT_FUNC = () => {
-    const results = [];
-    const seen = new Set();
-    // Strategy 1: anchor links with /groups/<numeric>/ hrefs
-    for (const link of document.querySelectorAll('a[href*="/groups/"]')) {
-      const match = link.href.match(/\/groups\/(\d{5,})\b/);
-      if (!match) continue;
-      const groupId = match[1];
-      if (seen.has(groupId)) continue;
-      seen.add(groupId);
-      const card = link.closest('[role="listitem"], [role="article"]')
-                ?? link.closest('[data-visualcompletion]')
-                ?? link.parentElement?.parentElement?.parentElement
-                ?? link.parentElement;
-      const heading = card?.querySelector('[role="heading"]')
-                   ?? card?.querySelector('span[dir="auto"]');
-      let name = heading?.textContent?.trim() || "";
-      if (!name || name.length < 2) {
-        const lt = link.textContent?.trim() ?? "";
-        name = (lt && !lt.startsWith("http") && lt.length > 1) ? lt : `Group ${groupId}`;
-      }
-      const img = card?.querySelector('img[src*="scontent"]') ?? card?.querySelector('img[src]');
-      results.push({ groupId, name, iconUrl: img?.getAttribute("src") ?? null });
-    }
-    // Strategy 2: data-groupid attributes (sidebar / widget patterns)
-    for (const el of document.querySelectorAll('[data-groupid]')) {
-      const groupId = el.getAttribute("data-groupid");
-      if (!groupId || !/^\d{5,}$/.test(groupId) || seen.has(groupId)) continue;
-      seen.add(groupId);
-      const name = el.textContent?.trim() || `Group ${groupId}`;
-      const img = el.querySelector("img[src]");
-      results.push({ groupId, name, iconUrl: img?.src ?? null });
-    }
-    return results;
-  };
-
-  // Initial pass before any scrolling — capture groups already in the viewport
+  // ── Anchor-scroll extraction ─────────────────────────────────────────────
+  // Facebook embeds /groups/joined/ in a custom inner scrollable div, so
+  // window.scrollBy has no effect. The fix is to inject ONE self-contained
+  // async function that runs entirely in the page context:
+  //   1. Extract all currently visible group links → Map
+  //   2. scrollIntoView() the last rendered group card (the browser finds the
+  //      correct scrollable ancestor automatically)
+  //   3. Wait for FB's lazy-loader to render the next batch
+  //   4. Repeat until Map.size has been stable for 3 consecutive iterations
+  // Because the Map lives in the page context, virtualised nodes that disappear
+  // from the DOM are already captured — nothing is lost between iterations.
+  let groups = [];
   try {
-    const [{ result: batch }] = await chrome.scripting.executeScript({
+    const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: EXTRACT_FUNC,
-    });
-    for (const g of batch ?? []) {
-      if (!accumulated.has(g.groupId)) accumulated.set(g.groupId, g);
-    }
-    console.log(`[EasyMarketing] Initial extraction: ${accumulated.size} group(s)`);
-  } catch { /* ignore */ }
+      // Chrome MV3 awaits Promises returned by async funcs injected here.
+      func: async (maxIterations, waitMs, stableThreshold) => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  for (let i = 0; i < MAX_SCROLLS; i++) {
-    // Use incremental scrollBy (not jump-to-absolute-bottom) so every viewport
-    // position is passed through — FB virtualises away old nodes on large jumps.
-    let atBottom = false;
-    try {
-      const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          window.scrollBy(0, 1000);
-          return (window.scrollY + window.innerHeight) >= (document.body.scrollHeight - 100);
-        },
-      });
-      atBottom = result ?? false;
-    } catch { /* ignore */ }
+        // Accumulator lives here — survives DOM virtualisation between iterations
+        const accumulated = new Map(); // groupId → { groupId, name, iconUrl }
 
-    await sleep(SCROLL_WAIT);
-
-    // Extract groups visible RIGHT NOW and merge into the accumulator
-    try {
-      const [{ result: batch }] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: EXTRACT_FUNC,
-      });
-      let newCount = 0;
-      for (const g of batch ?? []) {
-        if (!accumulated.has(g.groupId)) {
-          accumulated.set(g.groupId, g);
-          newCount++;
+        function extractVisible() {
+          // Strategy 1: <a href="/groups/<numeric-id>/"> links
+          for (const link of document.querySelectorAll('a[href*="/groups/"]')) {
+            const match = link.href.match(/\/groups\/(\d{5,})\b/);
+            if (!match) continue;
+            const groupId = match[1];
+            if (accumulated.has(groupId)) continue;
+            const card =
+              link.closest('[role="listitem"], [role="article"]') ??
+              link.closest('[data-visualcompletion]') ??
+              link.parentElement?.parentElement?.parentElement ??
+              link.parentElement;
+            const heading =
+              card?.querySelector('[role="heading"]') ??
+              card?.querySelector('span[dir="auto"]');
+            let name = heading?.textContent?.trim() || "";
+            if (!name || name.length < 2) {
+              const lt = link.textContent?.trim() ?? "";
+              name =
+                lt && !lt.startsWith("http") && lt.length > 1
+                  ? lt
+                  : `Group ${groupId}`;
+            }
+            const img =
+              card?.querySelector('img[src*="scontent"]') ??
+              card?.querySelector("img[src]");
+            accumulated.set(groupId, {
+              groupId,
+              name,
+              iconUrl: img?.getAttribute("src") ?? null,
+            });
+          }
+          // Strategy 2: data-groupid attributes (sidebar / widget patterns)
+          for (const el of document.querySelectorAll("[data-groupid]")) {
+            const groupId = el.getAttribute("data-groupid");
+            if (!groupId || !/^\d{5,}$/.test(groupId) || accumulated.has(groupId))
+              continue;
+            const name = el.textContent?.trim() || `Group ${groupId}`;
+            const img = el.querySelector("img[src]");
+            accumulated.set(groupId, {
+              groupId,
+              name,
+              iconUrl: img?.src ?? null,
+            });
+          }
         }
-      }
-      console.log(
-        `[EasyMarketing] Scroll ${i + 1}/${MAX_SCROLLS}: +${newCount} new (total: ${accumulated.size})`
-      );
-    } catch (err) {
-      console.warn("[EasyMarketing] Extract error at scroll step:", err.message);
-    }
 
-    if (atBottom) {
-      console.log("[EasyMarketing] Reached page bottom — all groups collected.");
-      break;
-    }
+        // Initial capture (groups already visible on load)
+        extractVisible();
+        console.log(`[EasyMarketing] Initial: ${accumulated.size} group(s)`);
+
+        let stableCount = 0;
+        let lastSize = accumulated.size;
+
+        for (let i = 0; i < maxIterations; i++) {
+          // Find the very last rendered group link — scrollIntoView() will
+          // scroll whichever ancestor (window OR the inner FB div) is needed.
+          const allGroupLinks = [
+            ...document.querySelectorAll('a[href*="/groups/"]'),
+          ].filter((el) => /\/groups\/(\d{5,})\b/.test(el.href));
+          const lastEl = allGroupLinks[allGroupLinks.length - 1];
+          if (lastEl) {
+            lastEl.scrollIntoView({ behavior: "smooth", block: "end" });
+          }
+
+          // Give FB's lazy-loader time to fetch and render the next batch
+          await sleep(waitMs);
+
+          const sizeBefore = accumulated.size;
+          extractVisible();
+          const added = accumulated.size - sizeBefore;
+          console.log(
+            `[EasyMarketing] Iter ${i + 1}/${maxIterations}: +${added} new (total: ${accumulated.size})`
+          );
+
+          if (accumulated.size === lastSize) {
+            stableCount++;
+            if (stableCount >= stableThreshold) {
+              console.log(
+                `[EasyMarketing] Stable for ${stableThreshold} iterations — done.`
+              );
+              break;
+            }
+          } else {
+            stableCount = 0;
+            lastSize = accumulated.size;
+          }
+        }
+
+        return [...accumulated.values()];
+      },
+      args: [60, 3500, 3], // maxIterations=60, waitMs=3500, stableThreshold=3
+    });
+    groups = result ?? [];
+  } catch (err) {
+    console.error("[EasyMarketing] Scrape error:", err.message);
   }
 
-  const groups = [...accumulated.values()];
   chrome.tabs.remove(tab.id).catch(() => {});
   console.log(`[EasyMarketing] Scraped ${groups.length} group(s) — uploading to server...`);
 

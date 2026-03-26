@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Send, Link2, Puzzle, ListChecks, LayoutTemplate, RefreshCw, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -14,7 +14,6 @@ import { ExtensionTab } from "./extension-tab";
 import { DistributionListForm } from "./distribution-list-form";
 import { DistributionListsTable } from "./distribution-lists-table";
 import { TemplatesTab, type TemplateRow } from "./templates-tab";
-import { cancelPostAction } from "@/actions/posts";
 import { requestGroupSyncAction } from "@/actions/sync";
 import type { Database } from "@/lib/supabase/types";
 
@@ -48,8 +47,6 @@ export function DashboardTabs({
   const router = useRouter();
 
   const [editingPost, setEditingPost] = useState<PostRow | null>(null);
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
-  const [, startCancelTransition] = useTransition();
 
   const [editingListId, setEditingListId] = useState<string | null>(null);
   const editingList = distributionLists.find((l) => l.id === editingListId) ?? null;
@@ -64,14 +61,6 @@ export function DashboardTabs({
   function handleEdit(post: PostRow) {
     setEditingPost(post);
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  function handleCancelPost(postId: string) {
-    setCancellingId(postId);
-    startCancelTransition(async () => {
-      await cancelPostAction(postId);
-      setCancellingId(null);
-    });
   }
 
   function handleEditDone() {
@@ -202,8 +191,6 @@ export function DashboardTabs({
         <PostsTable
           posts={posts}
           onEdit={handleEdit}
-          onCancel={handleCancelPost}
-          cancellingId={cancellingId}
           onResumeDraft={handleResumeDraft}
         />
       </TabsContent>
