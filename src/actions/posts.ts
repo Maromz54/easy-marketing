@@ -184,7 +184,7 @@ export async function createPostAction(
     // Deduplicate
     const uniqueGroupIds = [...new Set(allGroupIds.map((id) => id.trim()).filter(Boolean))];
 
-    console.log("[createPostAction] uniqueGroupIds:", uniqueGroupIds);
+    console.log("[createPostAction] uniqueGroupIds:", JSON.stringify(uniqueGroupIds), "count:", uniqueGroupIds.length);
 
     if (uniqueGroupIds.length === 0) {
       return { error: "לא נמצאו מזהי קבוצות תקינים. בדוק את הרשימות והמזהים הידניים." };
@@ -195,32 +195,49 @@ export async function createPostAction(
         ? new Date(input.scheduledAt)
         : new Date();
 
-    // Cumulative anti-ban delays: 0 s, then +120–300 s per post
-    const delays: number[] = [0];
-    for (let i = 1; i < uniqueGroupIds.length; i++) {
-      delays.push(delays[i - 1] + Math.floor(Math.random() * 181) + 120);
+    // Insert one row per group ID with cumulative anti-ban delay.
+    // We use individual inserts (not a batch) so each row gets its own
+    // error log — a batch insert can silently drop rows on constraint conflicts.
+    let insertedCount = 0;
+    let cumulativeDelaySec = 0;
+
+    for (const groupId of uniqueGroupIds) {
+      const scheduledAt = new Date(baseTime.getTime() + cumulativeDelaySec * 1000).toISOString();
+
+      console.log(`[createPostAction] inserting row ${insertedCount + 1}/${uniqueGroupIds.length} target_id="${groupId}" scheduled_at="${scheduledAt}"`);
+
+      const { error: dbError } = await supabase.from("posts").insert({
+        user_id: user.id,
+        facebook_token_id: null,
+        target_id: groupId,
+        content: input.content,
+        image_urls: input.imageUrls ?? [],
+        link_url: input.linkUrl || null,
+        recurrence_rule: recurrenceRule,
+        status: "scheduled" as const,
+        scheduled_at: scheduledAt,
+      });
+
+      if (dbError) {
+        console.error(`[createPostAction] insert failed for target_id="${groupId}":`, dbError);
+        // Continue inserting remaining groups rather than aborting the whole fan-out
+      } else {
+        insertedCount++;
+        console.log(`[createPostAction] row inserted OK (total so far: ${insertedCount})`);
+      }
+
+      // Add a random 2–5 min stagger before the next post
+      cumulativeDelaySec += Math.floor(Math.random() * 181) + 120;
     }
 
-    const rows = uniqueGroupIds.map((groupId, i) => ({
-      user_id: user.id,
-      facebook_token_id: null,
-      target_id: groupId,
-      content: input.content,
-      image_urls: input.imageUrls ?? [],
-      link_url: input.linkUrl || null,
-      recurrence_rule: recurrenceRule,
-      status: "scheduled" as const,
-      scheduled_at: new Date(baseTime.getTime() + delays[i] * 1000).toISOString(),
-    }));
+    console.log(`[createPostAction] fan-out complete: ${insertedCount}/${uniqueGroupIds.length} rows inserted`);
 
-    const { error: dbError } = await supabase.from("posts").insert(rows);
-    if (dbError) {
-      console.error("[createPostAction] DB insert error (fan-out):", dbError);
-      return { error: "שגיאה בשמירת הפוסטים. אנא נסה שוב." };
+    if (insertedCount === 0) {
+      return { error: "שגיאה בשמירת כל הפוסטים. אנא בדוק את לוגי השרת." };
     }
 
     revalidatePath("/dashboard");
-    return { success: true, count: rows.length };
+    return { success: true, count: insertedCount };
   }
 
   // ── Extension-only mode (no Facebook Page token) ───────────────────────
