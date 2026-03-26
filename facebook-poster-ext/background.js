@@ -245,65 +245,110 @@ async function checkForSyncJob(config) {
   await sleep(6000);
 
   // ── Anchor-scroll extraction ─────────────────────────────────────────────
-  // Facebook embeds /groups/joined/ in a custom inner scrollable div, so
-  // window.scrollBy has no effect. The fix is to inject ONE self-contained
-  // async function that runs entirely in the page context:
-  //   1. Extract all currently visible group links → Map
-  //   2. scrollIntoView() the last rendered group card (the browser finds the
-  //      correct scrollable ancestor automatically)
-  //   3. Wait for FB's lazy-loader to render the next batch
-  //   4. Repeat until Map.size has been stable for 3 consecutive iterations
-  // Because the Map lives in the page context, virtualised nodes that disappear
-  // from the DOM are already captured — nothing is lost between iterations.
+  // Facebook embeds the groups list in a custom inner scrollable div, so
+  // window.scrollBy has no effect. We inject ONE self-contained async function
+  // that runs entirely in the page context:
+  //   1. extractVisible() harvests all group links currently in the DOM → Map
+  //   2. scrollIntoView() on the LAST rendered group card triggers the correct
+  //      scrollable ancestor automatically (window OR the inner FB container)
+  //   3. Wait 6 s for FB's lazy-loader to render the next batch
+  //   4. Repeat until Map.size has been stable for 5 consecutive iterations
+  // The Map lives in page context, so virtualised nodes that disappear from the
+  // DOM are already captured — nothing is lost between iterations.
   let groups = [];
   try {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      // Chrome MV3 awaits Promises returned by async funcs injected here.
+      // Chrome MV3 properly awaits Promises returned by async funcs here.
       func: async (maxIterations, waitMs, stableThreshold) => {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-        // Accumulator lives here — survives DOM virtualisation between iterations
+        // Accumulator — survives DOM virtualisation between iterations
         const accumulated = new Map(); // groupId → { groupId, name, iconUrl }
 
+        // Returns true when text looks like descriptive meta-text (member
+        // counts, "suggested" labels) rather than a real group name.
+        function isMeta(text) {
+          if (!text || text.length < 2) return true;
+          if (/חברים/.test(text)) return true;         // "81 חברים בקבוצה"
+          if (/\bmembers\b/i.test(text)) return true;  // "1,234 members"
+          if (/^\d[\d,.\s]*$/.test(text)) return true; // pure number string
+          return false;
+        }
+
         function extractVisible() {
-          // Strategy 1: <a href="/groups/<numeric-id>/"> links
+          // ── Strategy 1: <a href="/groups/<numeric>/"> links ──────────────
           for (const link of document.querySelectorAll('a[href*="/groups/"]')) {
             const match = link.href.match(/\/groups\/(\d{5,})\b/);
             if (!match) continue;
             const groupId = match[1];
             if (accumulated.has(groupId)) continue;
+
+            // ── Name: look INSIDE the <a> element first ───────────────────
+            // FB always places the group title as a descendant of the link.
+            // Member-count text (e.g. "81 חברים בקבוצה") lives OUTSIDE the
+            // link in a sibling span, so restricting to link descendants
+            // eliminates it completely.
+            let name = "";
+
+            // P1 — heading / dir="auto" span that is a child of the link
+            const innerEl =
+              link.querySelector('[role="heading"]') ??
+              link.querySelector('span[dir="auto"]');
+            if (innerEl) {
+              const c = innerEl.textContent?.trim() ?? "";
+              if (!isMeta(c)) name = c;
+            }
+
+            // P2 — full text content of the link itself
+            if (!name) {
+              const lt = link.textContent?.trim() ?? "";
+              if (lt && !lt.startsWith("http") && !isMeta(lt)) name = lt;
+            }
+
+            // P3 — walk up to the enclosing card and look for a heading
+            // outside the link, but only accept it if it passes isMeta().
+            if (!name) {
+              const card =
+                link.closest('[role="listitem"]') ??
+                link.closest('[role="article"]') ??
+                link.closest('[data-visualcompletion]') ??
+                link.parentElement?.parentElement?.parentElement;
+              const cardEl =
+                card?.querySelector('[role="heading"]') ??
+                card?.querySelector('span[dir="auto"]');
+              const c = cardEl?.textContent?.trim() ?? "";
+              if (c && !isMeta(c)) name = c;
+            }
+
+            // Final fallback
+            if (!name) name = `Group ${groupId}`;
+
+            // ── Icon: search the enclosing card ───────────────────────────
             const card =
-              link.closest('[role="listitem"], [role="article"]') ??
+              link.closest('[role="listitem"]') ??
+              link.closest('[role="article"]') ??
               link.closest('[data-visualcompletion]') ??
               link.parentElement?.parentElement?.parentElement ??
               link.parentElement;
-            const heading =
-              card?.querySelector('[role="heading"]') ??
-              card?.querySelector('span[dir="auto"]');
-            let name = heading?.textContent?.trim() || "";
-            if (!name || name.length < 2) {
-              const lt = link.textContent?.trim() ?? "";
-              name =
-                lt && !lt.startsWith("http") && lt.length > 1
-                  ? lt
-                  : `Group ${groupId}`;
-            }
             const img =
               card?.querySelector('img[src*="scontent"]') ??
               card?.querySelector("img[src]");
+
             accumulated.set(groupId, {
               groupId,
               name,
               iconUrl: img?.getAttribute("src") ?? null,
             });
           }
-          // Strategy 2: data-groupid attributes (sidebar / widget patterns)
+
+          // ── Strategy 2: data-groupid attributes (widget / sidebar) ───────
           for (const el of document.querySelectorAll("[data-groupid]")) {
             const groupId = el.getAttribute("data-groupid");
             if (!groupId || !/^\d{5,}$/.test(groupId) || accumulated.has(groupId))
               continue;
-            const name = el.textContent?.trim() || `Group ${groupId}`;
+            const c = el.textContent?.trim() ?? "";
+            const name = !isMeta(c) ? c : `Group ${groupId}`;
             const img = el.querySelector("img[src]");
             accumulated.set(groupId, {
               groupId,
@@ -313,7 +358,7 @@ async function checkForSyncJob(config) {
           }
         }
 
-        // Initial capture (groups already visible on load)
+        // Initial capture (groups already in viewport on page load)
         extractVisible();
         console.log(`[EasyMarketing] Initial: ${accumulated.size} group(s)`);
 
@@ -321,8 +366,9 @@ async function checkForSyncJob(config) {
         let lastSize = accumulated.size;
 
         for (let i = 0; i < maxIterations; i++) {
-          // Find the very last rendered group link — scrollIntoView() will
-          // scroll whichever ancestor (window OR the inner FB div) is needed.
+          // Scroll the last known group link into view. scrollIntoView()
+          // automatically targets the correct scrollable ancestor — window
+          // or an inner FB div — so it works regardless of page layout.
           const allGroupLinks = [
             ...document.querySelectorAll('a[href*="/groups/"]'),
           ].filter((el) => /\/groups\/(\d{5,})\b/.test(el.href));
@@ -331,7 +377,7 @@ async function checkForSyncJob(config) {
             lastEl.scrollIntoView({ behavior: "smooth", block: "end" });
           }
 
-          // Give FB's lazy-loader time to fetch and render the next batch
+          // 6 s wait — generous enough for slow connections and large lists
           await sleep(waitMs);
 
           const sizeBefore = accumulated.size;
@@ -357,7 +403,8 @@ async function checkForSyncJob(config) {
 
         return [...accumulated.values()];
       },
-      args: [60, 3500, 3], // maxIterations=60, waitMs=3500, stableThreshold=3
+      // maxIterations=60, waitMs=6 s, stableThreshold=5 consecutive identical sizes
+      args: [60, 6000, 5],
     });
     groups = result ?? [];
   } catch (err) {
