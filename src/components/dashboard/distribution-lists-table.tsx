@@ -1,7 +1,7 @@
 "use client";
 
 import { useTransition } from "react";
-import { Trash2, Loader2, ListChecks } from "lucide-react";
+import { Trash2, Loader2, ListChecks, Pencil } from "lucide-react";
 
 import { deleteDistributionListAction } from "@/actions/distribution-lists";
 import { Button } from "@/components/ui/button";
@@ -22,9 +22,10 @@ export type DistributionListRow =
 
 interface DistributionListsTableProps {
   lists: DistributionListRow[];
+  onEdit?: (id: string) => void;
 }
 
-export function DistributionListsTable({ lists }: DistributionListsTableProps) {
+export function DistributionListsTable({ lists, onEdit }: DistributionListsTableProps) {
   if (lists.length === 0) {
     return (
       <Card className="border-dashed">
@@ -52,12 +53,12 @@ export function DistributionListsTable({ lists }: DistributionListsTableProps) {
               <TableHead>קבוצות</TableHead>
               <TableHead>מזהי קבוצות</TableHead>
               <TableHead>תאריך יצירה</TableHead>
-              <TableHead className="w-[80px]"></TableHead>
+              <TableHead className="w-[100px]"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {lists.map((list) => (
-              <ListRow key={list.id} list={list} />
+              <ListRow key={list.id} list={list} onEdit={onEdit} />
             ))}
           </TableBody>
         </Table>
@@ -66,7 +67,7 @@ export function DistributionListsTable({ lists }: DistributionListsTableProps) {
   );
 }
 
-function ListRow({ list }: { list: DistributionListRow }) {
+function ListRow({ list, onEdit }: { list: DistributionListRow; onEdit?: (id: string) => void }) {
   const [isPending, startTransition] = useTransition();
 
   function handleDelete() {
@@ -92,20 +93,31 @@ function ListRow({ list }: { list: DistributionListRow }) {
         {new Date(list.created_at).toLocaleDateString("he-IL")}
       </TableCell>
       <TableCell>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleDelete}
-          disabled={isPending}
-          className="text-destructive hover:text-destructive hover:bg-destructive/10"
-        >
-          {isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Trash2 className="h-4 w-4" />
-          )}
-          <span className="sr-only">מחק</span>
-        </Button>
+        <div className="flex gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onEdit?.(list.id)}
+            disabled={isPending}
+          >
+            <Pencil className="h-4 w-4" />
+            <span className="sr-only">ערוך</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleDelete}
+            disabled={isPending}
+            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+          >
+            {isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Trash2 className="h-4 w-4" />
+            )}
+            <span className="sr-only">מחק</span>
+          </Button>
+        </div>
       </TableCell>
     </TableRow>
   );

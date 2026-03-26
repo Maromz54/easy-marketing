@@ -50,6 +50,74 @@ export interface UpdatePostResult {
   error?: string;
 }
 
+// ── saveAsTemplateAction ───────────────────────────────────────────────────────
+
+export interface SaveAsTemplateInput {
+  content: string;
+  imageUrls?: string[];
+  linkUrl?: string;
+}
+
+export async function saveAsTemplateAction(
+  input: SaveAsTemplateInput
+): Promise<{ success?: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  if (!input.content.trim()) return { error: "תוכן התבנית הוא חובה." };
+
+  const { error: dbError } = await supabase.from("posts").insert({
+    user_id: user.id,
+    content: input.content,
+    image_urls: input.imageUrls ?? [],
+    link_url: input.linkUrl || null,
+    is_template: true,
+    status: "draft",
+  });
+
+  if (dbError) {
+    console.error("[saveAsTemplateAction] DB error:", dbError);
+    return { error: "שגיאה בשמירת התבנית. אנא נסה שוב." };
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
+// ── deleteTemplateAction ───────────────────────────────────────────────────────
+
+export async function deleteTemplateAction(
+  templateId: string
+): Promise<{ success?: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  const { data: existing } = await supabase
+    .from("posts")
+    .select("id")
+    .eq("id", templateId)
+    .eq("user_id", user.id)
+    .eq("is_template", true)
+    .maybeSingle();
+
+  if (!existing) return { error: "התבנית לא נמצאה." };
+
+  const { error: dbError } = await supabase
+    .from("posts")
+    .delete()
+    .eq("id", templateId);
+
+  if (dbError) {
+    console.error("[deleteTemplateAction] DB error:", dbError);
+    return { error: "שגיאה במחיקת התבנית. אנא נסה שוב." };
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
 // ── cancelPostAction ───────────────────────────────────────────────────────────
 
 export async function cancelPostAction(postId: string): Promise<CancelPostResult> {

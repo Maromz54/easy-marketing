@@ -2,15 +2,18 @@
 // EasyMarketing Facebook Poster — Background Service Worker (MV3)
 //
 // Flow every minute (via chrome.alarms):
-//   1. Call GET /api/extension/pending → server atomically marks post 'processing'
-//   2. Open Facebook group tab (hidden / inactive)
-//   3. Wait for tab to finish loading
-//   4. Inject postToFacebookGroup() into the page via chrome.scripting.executeScript
-//   5. Call POST /api/extension/update with published / failed
-//   6. Close the tab
+//   1. runQueue() drains ALL due posts before the next alarm fires.
+//      After each post (success or failure) it immediately fetches the next
+//      one — no 60-second wait between posts in the same batch.
+//   2. After the queue is empty, checkForSyncJob() picks up any pending
+//      group-sync requests from the dashboard.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ALARM_NAME = "easy-marketing-poll";
+const ALARM_NAME       = "easy-marketing-poll";
+const QUEUE_LIMIT_MS   = 10 * 60 * 1000; // 10-minute safety valve
+
+// Prevents two alarm fires from running the queue concurrently.
+let _queueRunning = false;
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -26,21 +29,54 @@ chrome.runtime.onStartup.addListener(() => {
 // ── Alarm handler ────────────────────────────────────────────────────────────
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === ALARM_NAME) checkAndPost();
+  if (alarm.name === ALARM_NAME && !_queueRunning) runQueue();
 });
 
-// ── Core logic ───────────────────────────────────────────────────────────────
+// ── Queue runner ─────────────────────────────────────────────────────────────
+// Processes ALL due posts sequentially before releasing the lock.
 
-async function checkAndPost() {
-  const { apiBaseUrl, extensionSecret } = await chrome.storage.sync.get([
-    "apiBaseUrl",
-    "extensionSecret",
-  ]);
+async function runQueue() {
+  if (_queueRunning) return;
+  _queueRunning = true;
+  const queueStart = Date.now();
 
-  if (!apiBaseUrl || !extensionSecret) {
-    console.log("[EasyMarketing] Not configured — open the extension popup to set API URL and secret.");
-    return;
+  try {
+    const { apiBaseUrl, extensionSecret } = await chrome.storage.sync.get([
+      "apiBaseUrl",
+      "extensionSecret",
+    ]);
+
+    if (!apiBaseUrl || !extensionSecret) {
+      console.log("[EasyMarketing] Not configured — open the extension popup to set API URL and secret.");
+      return;
+    }
+
+    const config = { apiBaseUrl, extensionSecret };
+
+    // Keep processing posts until the queue is empty or the time limit is hit.
+    while (Date.now() - queueStart < QUEUE_LIMIT_MS) {
+      const hadPost = await checkAndPost(config);
+      if (!hadPost) break; // Queue empty — exit the loop
+    }
+
+    if (Date.now() - queueStart >= QUEUE_LIMIT_MS) {
+      console.warn("[EasyMarketing] Queue time limit reached — stopping to avoid runaway loop.");
+    }
+
+    // After the post queue drains, pick up any pending group-sync jobs.
+    await checkForSyncJob(config);
+
+  } finally {
+    _queueRunning = false;
   }
+}
+
+// ── Core post-processing logic ────────────────────────────────────────────────
+// Returns true if a post was processed (success or failure), false if the
+// queue was empty (no post returned from /api/extension/pending).
+
+async function checkAndPost(config) {
+  const { apiBaseUrl, extensionSecret } = config;
 
   // 1. Poll for a pending post
   let post;
@@ -50,18 +86,18 @@ async function checkAndPost() {
     });
     if (!res.ok) {
       console.error("[EasyMarketing] pending API error:", res.status);
-      return;
+      return false;
     }
     const data = await res.json();
     post = data.post;
   } catch (err) {
     console.error("[EasyMarketing] Network error polling pending:", err);
-    return;
+    return false;
   }
 
   if (!post) {
     console.log("[EasyMarketing] No pending posts.");
-    return;
+    return false;
   }
 
   console.log("[EasyMarketing] Claiming post:", post.id, "→ target:", post.target_id);
@@ -70,20 +106,19 @@ async function checkAndPost() {
   if (!post.target_id) {
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed",
       "Extension requires a Target ID (group or page). Set target_id in the post composer.");
-    return;
+    return true; // Post was processed (even if failed)
   }
 
   const targetUrl = `https://www.facebook.com/groups/${post.target_id}`;
 
   // 3. Open Facebook tab — MUST be active so execCommand gets a real focused
   //    document. Chrome silently ignores execCommand in background tabs.
-  //    The tab is closed automatically after posting finishes.
   let tab;
   try {
     tab = await chrome.tabs.create({ url: targetUrl, active: true });
   } catch (err) {
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed", "Failed to open Facebook tab: " + err.message);
-    return;
+    return true;
   }
 
   // 4. Wait for the tab to fully load (or timeout after 30 s)
@@ -92,23 +127,21 @@ async function checkAndPost() {
   } catch (err) {
     chrome.tabs.remove(tab.id).catch(() => {});
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed", err.message);
-    return;
+    return true;
   }
 
   // Extra settling time — Facebook's SPA needs a moment after 'complete'.
-  // Background tabs render slower, so we give it more time.
   await sleep(5000);
 
   // 5a-pre. Pre-fetch all images in the background service worker (parallel).
   //   Facebook's CSP blocks content scripts from fetching external URLs directly.
   //   The service worker has no CSP restrictions, so we fetch here and pass the
-  //   results as an array of base64 data URIs to the content script as a 4th argument.
+  //   results as an array of base64 data URIs to the content script.
   const imageUrls = post.image_urls ?? [];
   let imageDataUris = [];
   if (imageUrls.length > 0) {
     console.log(`[EasyMarketing] Pre-fetching ${imageUrls.length} image(s) in parallel (CSP bypass)...`);
     imageDataUris = await Promise.all(imageUrls.map(fetchImageAsDataUri));
-    // Filter out any failed fetches (null entries)
     const successCount = imageDataUris.filter(Boolean).length;
     console.log(`[EasyMarketing] Images pre-fetched: ${successCount}/${imageUrls.length} succeeded.`);
     imageDataUris = imageDataUris.filter(Boolean);
@@ -126,7 +159,7 @@ async function checkAndPost() {
     chrome.tabs.remove(tab.id).catch(() => {});
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed",
       "content.js injection failed: " + err.message);
-    return;
+    return true;
   }
 
   // 5b. Call window.easyMarketingPost() with the post data.
@@ -136,15 +169,13 @@ async function checkAndPost() {
       target: { tabId: tab.id },
       world: "MAIN",
       func: (c, urls, l, dataUris) => window.easyMarketingPost(c, urls, l, dataUris),
-      // imageUrls: original URL array (used for filenames)
-      // imageDataUris: base64 data URIs pre-fetched by the service worker (CSP bypass)
       args: [post.content, imageUrls, post.link_url ?? null, imageDataUris],
     });
   } catch (err) {
     chrome.tabs.remove(tab.id).catch(() => {});
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed",
       "executeScript (call) failed: " + err.message);
-    return;
+    return true;
   }
 
   const scriptResult = execResult?.[0]?.result;
@@ -156,14 +187,113 @@ async function checkAndPost() {
   } else if (scriptResult?.imageInjectionFailed) {
     const errMsg = scriptResult?.error ?? "Image injection failed";
     console.error(`[EasyMarketing] Image injection failed (${imageUrls.length} image(s)) — tab LEFT OPEN for inspection:`, errMsg);
-    console.error("[EasyMarketing] Open DevTools on the Facebook tab and filter [EasyMarketing] to see which strategy (S1–S4) ran.");
     // Tab intentionally NOT closed — user needs to inspect the dialog.
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed", errMsg);
   } else {
     const errMsg = scriptResult?.error ?? "Unknown error in content script";
     console.error("[EasyMarketing] Posting failed — tab left open for inspection:", errMsg);
-    // Tab intentionally NOT closed so the user can inspect the DOM.
     await markPost(apiBaseUrl, extensionSecret, post.id, "failed", errMsg);
+  }
+
+  return true; // A post was processed
+}
+
+// ── Group sync ────────────────────────────────────────────────────────────────
+// Called after the post queue drains. Checks for a pending sync job from the
+// dashboard and, if found, scrapes the user's Facebook groups page.
+
+async function checkForSyncJob(config) {
+  const { apiBaseUrl, extensionSecret } = config;
+
+  let job;
+  try {
+    const res = await fetch(`${apiBaseUrl}/api/extension/sync-check`, {
+      headers: { "x-extension-secret": extensionSecret },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    job = data.job;
+  } catch {
+    return; // Sync check is best-effort — don't block on network errors
+  }
+
+  if (!job) return;
+
+  console.log("[EasyMarketing] Sync job found — opening Facebook groups page...");
+
+  let tab;
+  try {
+    tab = await chrome.tabs.create({
+      url: "https://www.facebook.com/groups/feed/",
+      active: false,
+    });
+  } catch (err) {
+    console.error("[EasyMarketing] Failed to open groups tab:", err.message);
+    return;
+  }
+
+  try {
+    await waitForTabLoad(tab.id, 30_000);
+  } catch {
+    chrome.tabs.remove(tab.id).catch(() => {});
+    return;
+  }
+
+  // Let the Facebook SPA render
+  await sleep(5000);
+
+  // Scroll 3× to trigger lazy-loaded groups
+  for (let i = 0; i < 3; i++) {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => window.scrollTo(0, document.body.scrollHeight),
+    }).catch(() => {});
+    await sleep(2000);
+  }
+
+  // Scrape all group links with numeric IDs
+  let groups = [];
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const results = [];
+        const seen = new Set();
+        for (const link of document.querySelectorAll('a[href*="/groups/"]')) {
+          const match = link.href.match(/\/groups\/(\d{5,})\//);
+          if (!match) continue;
+          const groupId = match[1];
+          if (seen.has(groupId)) continue;
+          seen.add(groupId);
+          const container = link.closest('[role="listitem"]') ?? link.parentElement;
+          const heading = container?.querySelector('[role="heading"], span[dir="auto"]');
+          const name = heading?.textContent?.trim() || link.textContent?.trim() || `Group ${groupId}`;
+          const img = container?.querySelector("img[src]");
+          results.push({ groupId, name, iconUrl: img?.src ?? null });
+        }
+        return results;
+      },
+    });
+    groups = result ?? [];
+  } catch (err) {
+    console.error("[EasyMarketing] Scrape error:", err.message);
+  }
+
+  chrome.tabs.remove(tab.id).catch(() => {});
+  console.log(`[EasyMarketing] Scraped ${groups.length} group(s) — uploading to server...`);
+
+  try {
+    await fetch(`${apiBaseUrl}/api/extension/sync-groups`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-extension-secret": extensionSecret,
+      },
+      body: JSON.stringify({ jobId: job.id, groups }),
+    });
+    console.log("[EasyMarketing] Group sync complete ✓");
+  } catch (err) {
+    console.error("[EasyMarketing] Failed to upload groups:", err.message);
   }
 }
 
@@ -194,7 +324,6 @@ function waitForTabLoad(tabId, timeoutMs) {
 
 // Fetch a URL and return a base64 data URI string (e.g. "data:image/jpeg;base64,...")
 // Runs in the service worker — no page CSP applies here.
-// Returns null on any error so callers can fall back gracefully.
 async function fetchImageAsDataUri(url) {
   try {
     const response = await fetch(url);
@@ -206,7 +335,6 @@ async function fetchImageAsDataUri(url) {
     const mimeType = blob.type || "image/jpeg";
     const arrayBuffer = await blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
-    // Build base64 in chunks to avoid stack overflow on large images
     let binary = "";
     for (let i = 0; i < bytes.byteLength; i++) {
       binary += String.fromCharCode(bytes[i]);

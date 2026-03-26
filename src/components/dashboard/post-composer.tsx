@@ -9,7 +9,8 @@ import {
   Link2, CheckCircle2, Target, Puzzle, ListChecks, Pencil, X, Upload, RefreshCw,
 } from "lucide-react";
 
-import { createPostAction, updatePostAction } from "@/actions/posts";
+import { createPostAction, updatePostAction, saveAsTemplateAction } from "@/actions/posts";
+import type { TemplateRow } from "@/components/dashboard/templates-tab";
 import { createClient } from "@/lib/supabase/client";
 import { PostPreview } from "@/components/dashboard/post-preview";
 import { DistributionPanel } from "@/components/dashboard/distribution-panel";
@@ -73,6 +74,8 @@ const postSchema = z
     recurrenceType: z.enum(["none", "weekly", "monthly"]),
     // Selected weekdays (0=Sun … 6=Sat) when recurrenceType === "weekly"
     recurrenceDays: z.array(z.number()),
+    // Individual synced group IDs selected directly from the groups panel
+    selectedSyncedGroupIds: z.array(z.string()),
   })
   .superRefine((data, ctx) => {
     if (data.publishMode === "scheduled") {
@@ -119,21 +122,36 @@ const WEEKDAYS = [
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
+type FacebookGroupRow = Database["public"]["Tables"]["facebook_groups"]["Row"];
+
 interface PostComposerProps {
   pages?: FacebookToken[] | null;
   distributionLists?: DistributionListRow[] | null;
+  facebookGroups?: FacebookGroupRow[] | null;
   editingPost?: PostRow | null;
   onEditDone?: () => void;
+  templateToLoad?: TemplateRow | null;
+  onTemplateLoaded?: () => void;
 }
 
-export function PostComposer({ pages, distributionLists, editingPost, onEditDone }: PostComposerProps) {
+export function PostComposer({
+  pages,
+  distributionLists,
+  facebookGroups,
+  editingPost,
+  onEditDone,
+  templateToLoad,
+  onTemplateLoaded,
+}: PostComposerProps) {
   const safePages = pages ?? [];
   const safeLists = distributionLists ?? [];
+  const safeGroups = facebookGroups ?? [];
   const isEditing = !!editingPost;
 
   const [serverError, setServerError] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
   const [successCount, setSuccessCount] = useState<number | null>(null);
+  const [templateSaved, setTemplateSaved] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   // Image upload state
@@ -155,6 +173,7 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
       scheduledAt: "",
       recurrenceType: "none",
       recurrenceDays: [],
+      selectedSyncedGroupIds: [],
     },
   });
 
@@ -226,6 +245,29 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingPost]);
 
+  // Load a template into the form when the Templates tab fires "Use Template"
+  useEffect(() => {
+    if (!templateToLoad) return;
+    form.reset({
+      facebookTokenId: EXTENSION_SENTINEL,
+      distributionListIds: [],
+      extraGroupIds: "",
+      selectedSyncedGroupIds: [],
+      targetId: "",
+      content: templateToLoad.content,
+      imageUrls: templateToLoad.image_urls ?? [],
+      linkUrl: templateToLoad.link_url ?? "",
+      publishMode: "now",
+      scheduledAt: "",
+      recurrenceType: "none",
+      recurrenceDays: [],
+    });
+    setServerError(null);
+    setTemplateSaved(false);
+    onTemplateLoaded?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateToLoad]);
+
   // Watched values — coerce to non-nullable so downstream code never crashes on
   // undefined (form.watch can return undefined before the first render commit).
   const publishMode       = form.watch("publishMode");
@@ -234,13 +276,17 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
   const watchedImageUrls  = form.watch("imageUrls")  ?? [];
   const watchedDistIds    = form.watch("distributionListIds") ?? [];
   const watchedExtraIds   = form.watch("extraGroupIds") ?? "";
-  const recurrenceType    = form.watch("recurrenceType") ?? "none";
-  const recurrenceDays    = form.watch("recurrenceDays") ?? [];
-  const contentLength     = watchedContent?.length ?? 0;
+  const recurrenceType           = form.watch("recurrenceType") ?? "none";
+  const recurrenceDays           = form.watch("recurrenceDays") ?? [];
+  const watchedSyncedGroupIds    = form.watch("selectedSyncedGroupIds") ?? [];
+  const contentLength            = watchedContent?.length ?? 0;
 
   const useExtension = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
 
-  const useDistList = watchedDistIds.length > 0 || !!watchedExtraIds?.trim();
+  const useDistList =
+    watchedDistIds.length > 0 ||
+    !!watchedExtraIds?.trim() ||
+    watchedSyncedGroupIds.length > 0;
 
   const totalGroupCount = useMemo(() => {
     const fromLists = safeLists
@@ -250,8 +296,8 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    return new Set([...fromLists, ...manual]).size;
-  }, [watchedDistIds, watchedExtraIds, safeLists]);
+    return new Set([...fromLists, ...manual, ...watchedSyncedGroupIds]).size;
+  }, [watchedDistIds, watchedExtraIds, watchedSyncedGroupIds, safeLists]);
 
   const minDateTime = new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16);
 
@@ -343,17 +389,18 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           ? undefined
           : values.facebookTokenId?.trim() || undefined;
 
-      // Parse extra group IDs from the comma-separated input
-      const extraGroupIds = (values.extraGroupIds ?? "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
+      // Merge manual extra IDs with any synced groups checked directly
+      const extraGroupIds = [
+        ...(values.extraGroupIds ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        ...(values.selectedSyncedGroupIds ?? []),
+      ];
+      const uniqueExtraGroupIds = [...new Set(extraGroupIds)];
 
       const result = await createPostAction({
         facebookTokenId: resolvedTokenId,
         targetId: values.targetId?.trim() || undefined,
         distributionListIds: values.distributionListIds.length ? values.distributionListIds : undefined,
-        extraGroupIds: extraGroupIds.length ? extraGroupIds : undefined,
+        extraGroupIds: uniqueExtraGroupIds.length ? uniqueExtraGroupIds : undefined,
         content: values.content,
         imageUrls: values.imageUrls.length ? values.imageUrls : undefined,
         linkUrl: values.linkUrl || undefined,
@@ -443,6 +490,13 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
           </div>
         )}
 
+        {templateSaved && (
+          <div className="mb-4 flex items-center gap-2 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+            התבנית נשמרה בהצלחה! תמצא אותה בלשונית התבניות.
+          </div>
+        )}
+
         {serverError && (
           <div className="mb-4 rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">
             {serverError}
@@ -491,7 +545,7 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
               )}
 
               {/* Distribution lists (checkbox panel, hidden in edit mode) */}
-              {!isEditing && safeLists.length > 0 && (
+              {!isEditing && (safeLists.length > 0 || safeGroups.length > 0) && (
                 <FormField
                   control={form.control}
                   name="distributionListIds"
@@ -513,6 +567,11 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
                         }
                         onChangeExtra={(val) =>
                           form.setValue("extraGroupIds", val, { shouldDirty: true })
+                        }
+                        syncedGroups={safeGroups}
+                        selectedSyncedGroupIds={watchedSyncedGroupIds}
+                        onChangeSyncedIds={(ids) =>
+                          form.setValue("selectedSyncedGroupIds", ids, { shouldDirty: true })
                         }
                       />
                       <FormMessage />
@@ -831,18 +890,49 @@ export function PostComposer({ pages, distributionLists, editingPost, onEditDone
                 </>
               )}
 
-              {/* Submit */}
-              <Button type="submit" className="w-full sm:w-auto" disabled={isPending || isUploading}>
-                {isPending ? (
-                  <><Loader2 className="ms-2 h-4 w-4 animate-spin" />שומר...</>
-                ) : isEditing ? (
-                  <><Pencil className="ms-2 h-4 w-4" />שמור שינויים</>
-                ) : publishMode === "now" ? (
-                  <><Send className="ms-2 h-4 w-4" />שמור לפרסום</>
-                ) : (
-                  <><CalendarClock className="ms-2 h-4 w-4" />תזמן פרסום</>
+              {/* Submit row */}
+              <div className="flex flex-wrap gap-2">
+                <Button type="submit" className="w-full sm:w-auto" disabled={isPending || isUploading}>
+                  {isPending ? (
+                    <><Loader2 className="ms-2 h-4 w-4 animate-spin" />שומר...</>
+                  ) : isEditing ? (
+                    <><Pencil className="ms-2 h-4 w-4" />שמור שינויים</>
+                  ) : publishMode === "now" ? (
+                    <><Send className="ms-2 h-4 w-4" />שמור לפרסום</>
+                  ) : (
+                    <><CalendarClock className="ms-2 h-4 w-4" />תזמן פרסום</>
+                  )}
+                </Button>
+
+                {!isEditing && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full sm:w-auto"
+                    disabled={isPending || isUploading}
+                    onClick={() => {
+                      const values = form.getValues();
+                      if (!values.content.trim()) return;
+                      setTemplateSaved(false);
+                      startTransition(async () => {
+                        const result = await saveAsTemplateAction({
+                          content: values.content,
+                          imageUrls: values.imageUrls.length ? values.imageUrls : undefined,
+                          linkUrl: values.linkUrl || undefined,
+                        });
+                        if (result.error) {
+                          setServerError(result.error);
+                        } else {
+                          setTemplateSaved(true);
+                          setTimeout(() => setTemplateSaved(false), 5000);
+                        }
+                      });
+                    }}
+                  >
+                    שמור כתבנית
+                  </Button>
                 )}
-              </Button>
+              </div>
             </form>
           </Form>
 

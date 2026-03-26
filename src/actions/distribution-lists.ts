@@ -57,6 +57,56 @@ export async function createDistributionListAction(
   return { success: true, id: data.id };
 }
 
+// ── updateDistributionListAction ───────────────────────────────────────────────
+
+export interface UpdateDistributionListInput {
+  id: string;
+  name: string;
+  groupIds: string[];
+}
+
+export async function updateDistributionListAction(
+  input: UpdateDistributionListInput
+): Promise<CreateDistributionListResult> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  const name = input.name.trim();
+  if (!name) return { error: "שם הרשימה הוא חובה." };
+  if (name.length > 100) return { error: "שם הרשימה ארוך מדי (מקסימום 100 תווים)." };
+
+  const deduped = [...new Set(input.groupIds.map((id) => id.trim()).filter(Boolean))];
+
+  if (deduped.length === 0) return { error: "יש להזין לפחות מזהה קבוצה אחד." };
+  if (deduped.length > 50) return { error: "ניתן להוסיף עד 50 קבוצות לרשימה." };
+  if (deduped.some((id) => !/^\d+$/.test(id))) {
+    return { error: "כל מזהה קבוצה חייב להיות מספרי בלבד." };
+  }
+
+  const { data: existing } = await supabase
+    .from("distribution_lists")
+    .select("id")
+    .eq("id", input.id)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (!existing) return { error: "הרשימה לא נמצאה או שאין לך הרשאה לערוך אותה." };
+
+  const { error: dbError } = await supabase
+    .from("distribution_lists")
+    .update({ name, group_ids: deduped })
+    .eq("id", input.id);
+
+  if (dbError) {
+    console.error("[updateDistributionListAction] DB error:", dbError);
+    return { error: "שגיאה בעדכון הרשימה. אנא נסה שוב." };
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true, id: input.id };
+}
+
 // ── deleteDistributionListAction ───────────────────────────────────────────────
 
 export async function deleteDistributionListAction(

@@ -92,6 +92,7 @@ export type Database = {
           facebook_post_id: string | null;
           error_message: string | null;
           recurrence_rule: string | null;
+          is_template: boolean;
           created_at: string;
         };
         Insert: {
@@ -109,6 +110,7 @@ export type Database = {
           facebook_post_id?: string | null;
           error_message?: string | null;
           recurrence_rule?: string | null;
+          is_template?: boolean;
           created_at?: string;
         };
         Update: {
@@ -126,6 +128,7 @@ export type Database = {
           facebook_post_id?: string | null;
           error_message?: string | null;
           recurrence_rule?: string | null;
+          is_template?: boolean;
           created_at?: string;
         };
         Relationships: [
@@ -208,6 +211,76 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "distribution_lists_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
+      facebook_groups: {
+        Row: {
+          id: string;
+          user_id: string;
+          group_id: string;
+          name: string;
+          icon_url: string | null;
+          synced_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          group_id: string;
+          name: string;
+          icon_url?: string | null;
+          synced_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          group_id?: string;
+          name?: string;
+          icon_url?: string | null;
+          synced_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "facebook_groups_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
+      sync_jobs: {
+        Row: {
+          id: string;
+          user_id: string;
+          type: string;
+          status: string;
+          created_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          type?: string;
+          status?: string;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          type?: string;
+          status?: string;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sync_jobs_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: false;
             referencedRelation: "profiles";

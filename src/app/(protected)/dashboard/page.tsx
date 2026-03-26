@@ -14,8 +14,11 @@ export const metadata: Metadata = {
   title: "לוח בקרה | EasyMarketing",
 };
 
+import type { TemplateRow } from "@/components/dashboard/templates-tab";
+
 type FbTokenRow = Database["public"]["Tables"]["facebook_tokens"]["Row"];
 type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["Row"];
+type FacebookGroupRow = Database["public"]["Tables"]["facebook_groups"]["Row"];
 
 interface DashboardPageProps {
   searchParams: { fb_error?: string; fb_success?: string };
@@ -101,6 +104,24 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
     .limit(200);
   const distributionLists = (listsData ?? []) as DistributionListRow[];
 
+  // Synced Facebook groups
+  const { data: groupsData } = await supabase
+    .from("facebook_groups")
+    .select("id, user_id, group_id, name, icon_url, synced_at")
+    .eq("user_id", user.id)
+    .order("name");
+  const facebookGroups = (groupsData ?? []) as FacebookGroupRow[];
+
+  // Templates (posts with is_template=true)
+  const { data: templatesData } = await supabase
+    .from("posts")
+    .select("id, content, image_urls, link_url, created_at")
+    .eq("user_id", user.id)
+    .eq("is_template", true)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  const templates = (templatesData ?? []) as TemplateRow[];
+
   // ── Derived stats ──────────────────────────────────────────────────────
   const displayName = profile?.full_name ?? user.email ?? "משתמש";
   const scheduledCount = posts.filter((p) => p.status === "scheduled").length;
@@ -178,6 +199,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           links={links}
           appUrl={appUrl}
           distributionLists={distributionLists}
+          facebookGroups={facebookGroups}
+          templates={templates}
         />
 
       </main>

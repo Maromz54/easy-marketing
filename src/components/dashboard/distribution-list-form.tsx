@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Loader2, ListChecks, CheckCircle2 } from "lucide-react";
+import { Loader2, ListChecks, CheckCircle2, Pencil } from "lucide-react";
 
-import { createDistributionListAction } from "@/actions/distribution-lists";
+import {
+  createDistributionListAction,
+  updateDistributionListAction,
+} from "@/actions/distribution-lists";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,6 +24,9 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Separator } from "@/components/ui/separator";
+import type { Database } from "@/lib/supabase/types";
+
+type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["Row"];
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 const distributionListSchema = z.object({
@@ -50,7 +56,13 @@ const distributionListSchema = z.object({
 type DistributionListFormValues = z.infer<typeof distributionListSchema>;
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export function DistributionListForm() {
+interface DistributionListFormProps {
+  editingList?: DistributionListRow | null;
+  onEditDone?: () => void;
+}
+
+export function DistributionListForm({ editingList, onEditDone }: DistributionListFormProps) {
+  const isEditing = !!editingList;
   const [serverError, setServerError] = useState<string | null>(null);
   const [successName, setSuccessName] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -59,6 +71,20 @@ export function DistributionListForm() {
     resolver: zodResolver(distributionListSchema),
     defaultValues: { name: "", groupIdsRaw: "" },
   });
+
+  // Pre-fill when entering edit mode
+  useEffect(() => {
+    if (editingList) {
+      form.reset({
+        name: editingList.name,
+        groupIdsRaw: editingList.group_ids.join(", "),
+      });
+      setServerError(null);
+      setSuccessName(null);
+    } else {
+      form.reset({ name: "", groupIdsRaw: "" });
+    }
+  }, [editingList, form]);
 
   function onSubmit(values: DistributionListFormValues) {
     setServerError(null);
@@ -69,28 +95,49 @@ export function DistributionListForm() {
         .map((s) => s.trim())
         .filter(Boolean);
 
-      const result = await createDistributionListAction({ name: values.name, groupIds });
-
-      if (result.error) {
-        setServerError(result.error);
+      if (isEditing && editingList) {
+        const result = await updateDistributionListAction({
+          id: editingList.id,
+          name: values.name,
+          groupIds,
+        });
+        if (result.error) {
+          setServerError(result.error);
+        } else {
+          onEditDone?.();
+        }
       } else {
-        setSuccessName(values.name);
-        form.reset();
+        const result = await createDistributionListAction({ name: values.name, groupIds });
+        if (result.error) {
+          setServerError(result.error);
+        } else {
+          setSuccessName(values.name);
+          form.reset();
+        }
       }
     });
   }
 
   return (
-    <Card>
+    <Card className={isEditing ? "border-primary/40 bg-primary/5" : ""}>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-lg">
-          <ListChecks className="h-5 w-5 text-primary" />
-          יצירת רשימת תפוצה חדשה
+          {isEditing ? (
+            <>
+              <Pencil className="h-5 w-5 text-primary" />
+              עריכת רשימה: {editingList?.name}
+            </>
+          ) : (
+            <>
+              <ListChecks className="h-5 w-5 text-primary" />
+              יצירת רשימת תפוצה חדשה
+            </>
+          )}
         </CardTitle>
       </CardHeader>
 
       <CardContent className="space-y-4">
-        {/* Success */}
+        {/* Success (create only) */}
         {successName && (
           <div className="flex items-center gap-2 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
@@ -148,19 +195,26 @@ export function DistributionListForm() {
 
             <Separator />
 
-            <Button type="submit" disabled={isPending} className="w-full sm:w-auto">
-              {isPending ? (
-                <>
-                  <Loader2 className="ms-2 h-4 w-4 animate-spin" />
-                  יוצר רשימה...
-                </>
-              ) : (
-                <>
-                  <ListChecks className="ms-2 h-4 w-4" />
-                  צור רשימה
-                </>
+            <div className="flex gap-2">
+              <Button type="submit" disabled={isPending} className="w-full sm:w-auto">
+                {isPending ? (
+                  <>
+                    <Loader2 className="ms-2 h-4 w-4 animate-spin" />
+                    {isEditing ? "מעדכן..." : "יוצר רשימה..."}
+                  </>
+                ) : (
+                  <>
+                    {isEditing ? <Pencil className="ms-2 h-4 w-4" /> : <ListChecks className="ms-2 h-4 w-4" />}
+                    {isEditing ? "עדכן רשימה" : "צור רשימה"}
+                  </>
+                )}
+              </Button>
+              {isEditing && (
+                <Button type="button" variant="outline" onClick={onEditDone} disabled={isPending}>
+                  ביטול
+                </Button>
               )}
-            </Button>
+            </div>
           </form>
         </Form>
       </CardContent>

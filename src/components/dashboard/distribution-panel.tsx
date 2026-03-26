@@ -1,12 +1,13 @@
 "use client";
 
 import type { Database } from "@/lib/supabase/types";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 
 type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["Row"];
+type FacebookGroupRow = Database["public"]["Tables"]["facebook_groups"]["Row"];
 
 interface DistributionPanelProps {
   lists: DistributionListRow[];
@@ -14,6 +15,9 @@ interface DistributionPanelProps {
   extraGroupIds: string;
   onChangeIds: (ids: string[]) => void;
   onChangeExtra: (val: string) => void;
+  syncedGroups?: FacebookGroupRow[];
+  selectedSyncedGroupIds?: string[];
+  onChangeSyncedIds?: (ids: string[]) => void;
 }
 
 export function DistributionPanel({
@@ -22,9 +26,24 @@ export function DistributionPanel({
   extraGroupIds,
   onChangeIds,
   onChangeExtra,
+  syncedGroups,
+  selectedSyncedGroupIds,
+  onChangeSyncedIds,
 }: DistributionPanelProps) {
-  const safeSelectedIds = selectedIds ?? [];
-  const safeExtraIds    = extraGroupIds ?? "";
+  const safeSelectedIds      = selectedIds ?? [];
+  const safeExtraIds         = extraGroupIds ?? "";
+  const safeSyncedGroups     = syncedGroups ?? [];
+  const safeSyncedSelectedIds = selectedSyncedGroupIds ?? [];
+
+  const [groupSearch, setGroupSearch] = useState("");
+
+  const filteredGroups = useMemo(() => {
+    const q = groupSearch.trim().toLowerCase();
+    if (!q) return safeSyncedGroups;
+    return safeSyncedGroups.filter(
+      (g) => g.name.toLowerCase().includes(q) || g.group_id.includes(q)
+    );
+  }, [safeSyncedGroups, groupSearch]);
 
   const totalCount = useMemo(() => {
     const fromLists = lists
@@ -34,14 +53,23 @@ export function DistributionPanel({
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    return new Set([...fromLists, ...manual]).size;
-  }, [lists, safeSelectedIds, safeExtraIds]);
+    return new Set([...fromLists, ...manual, ...safeSyncedSelectedIds]).size;
+  }, [lists, safeSelectedIds, safeExtraIds, safeSyncedSelectedIds]);
 
   function toggle(id: string) {
     onChangeIds(
       safeSelectedIds.includes(id)
         ? safeSelectedIds.filter((x) => x !== id)
         : [...safeSelectedIds, id]
+    );
+  }
+
+  function toggleSynced(groupId: string) {
+    if (!onChangeSyncedIds) return;
+    onChangeSyncedIds(
+      safeSyncedSelectedIds.includes(groupId)
+        ? safeSyncedSelectedIds.filter((x) => x !== groupId)
+        : [...safeSyncedSelectedIds, groupId]
     );
   }
 
@@ -68,6 +96,58 @@ export function DistributionPanel({
           </div>
         ))}
       </div>
+
+      {/* Synced groups */}
+      {safeSyncedGroups.length > 0 && (
+        <div className="px-3 py-2 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              קבוצות מסונכרנות ({safeSyncedGroups.length})
+            </p>
+            {safeSyncedSelectedIds.length > 0 && (
+              <span className="text-xs text-purple-700 font-medium">
+                {safeSyncedSelectedIds.length} נבחרו
+              </span>
+            )}
+          </div>
+          <Input
+            placeholder="חפש קבוצה..."
+            dir="rtl"
+            className="h-7 text-xs"
+            value={groupSearch}
+            onChange={(e) => setGroupSearch(e.target.value)}
+          />
+          <div className="max-h-44 overflow-y-auto space-y-1.5">
+            {filteredGroups.map((group) => (
+              <div key={group.group_id} className="flex items-center gap-2">
+                <Checkbox
+                  id={`sg-${group.group_id}`}
+                  checked={safeSyncedSelectedIds.includes(group.group_id)}
+                  onCheckedChange={() => toggleSynced(group.group_id)}
+                />
+                {group.icon_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={group.icon_url}
+                    alt=""
+                    className="h-6 w-6 rounded-full object-cover shrink-0"
+                  />
+                )}
+                <Label
+                  htmlFor={`sg-${group.group_id}`}
+                  className="flex-1 cursor-pointer text-sm font-normal leading-tight"
+                >
+                  <span className="block truncate max-w-[180px]">{group.name}</span>
+                  <span className="text-xs text-muted-foreground font-mono">{group.group_id}</span>
+                </Label>
+              </div>
+            ))}
+            {filteredGroups.length === 0 && (
+              <p className="text-xs text-muted-foreground py-1">לא נמצאו קבוצות</p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Manual group IDs */}
       <div className="px-3 py-2 space-y-1.5">
