@@ -260,7 +260,7 @@ async function checkForSyncJob(config) {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       // Chrome MV3 properly awaits Promises returned by async funcs here.
-      func: async (maxIterations, waitMs, stableThreshold) => {
+      func: async (maxIterations, pulseWaitMs, stableThreshold) => {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
         // Accumulator — survives DOM virtualisation between iterations
@@ -389,6 +389,27 @@ async function checkForSyncJob(config) {
           }
         }
 
+        // ── Dynamic container detection ───────────────────────────────────
+        // Facebook renders the groups list inside a custom inner scrollable
+        // div. We walk up from a known group link to find the first ancestor
+        // whose CSS overflow-y is "auto" or "scroll" AND that is actually
+        // taller than its viewport (i.e. it has overflow content).
+        // Falls back to document.documentElement if none is found.
+        function findScrollContainer() {
+          const links = document.querySelectorAll('a[href*="/groups/"]');
+          for (const link of links) {
+            let el = link.parentElement;
+            while (el && el !== document.body) {
+              const oy = window.getComputedStyle(el).overflowY;
+              if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight) {
+                return el;
+              }
+              el = el.parentElement;
+            }
+          }
+          return document.documentElement;
+        }
+
         // Initial capture (groups already in viewport on page load)
         extractVisible();
         console.log(`[EasyMarketing] Initial: ${accumulated.size} group(s)`);
@@ -406,7 +427,10 @@ async function checkForSyncJob(config) {
             break;
           }
 
-          // Scroll the last rendered group link into view.
+          // ── Pulse scroll (two-stage) ──────────────────────────────────
+          // Stage 1: anchor-scroll the last visible group link into view.
+          //   This triggers FB's IntersectionObserver and nudges the lazy
+          //   loader to begin fetching the next batch.
           const allGroupLinks = [
             ...document.querySelectorAll('a[href*="/groups/"]'),
           ].filter((el) => /\/groups\/(\d{5,})\b/.test(el.href));
@@ -414,8 +438,18 @@ async function checkForSyncJob(config) {
           if (lastEl) {
             lastEl.scrollIntoView({ behavior: "smooth", block: "end" });
           }
+          await sleep(pulseWaitMs); // wait for stage-1 lazy-load
 
-          await sleep(waitMs);
+          // Collect whatever rendered between stage 1 and stage 2.
+          extractVisible();
+
+          // Stage 2: force-scroll the actual container another 1000 px.
+          //   Even if no new links appeared yet, this guarantees the
+          //   viewport moves past any "false floor" that FB rendered as
+          //   a spacer while the real next batch is still loading.
+          const container = findScrollContainer();
+          container.scrollTop += 1000;
+          await sleep(pulseWaitMs); // wait for stage-2 lazy-load
 
           const sizeBefore = accumulated.size;
           extractVisible();
@@ -426,6 +460,9 @@ async function checkForSyncJob(config) {
 
           if (accumulated.size === lastSize) {
             stableCount++;
+            console.log(
+              `[EasyMarketing] No new groups — patience ${stableCount}/${stableThreshold}`
+            );
             if (stableCount >= stableThreshold) {
               console.log(
                 `[EasyMarketing] Stable for ${stableThreshold} iterations — done.`
@@ -440,8 +477,9 @@ async function checkForSyncJob(config) {
 
         return [...accumulated.values()];
       },
-      // maxIterations=200 (covers 600+ groups), waitMs=6 s, stableThreshold=5
-      args: [200, 6000, 5],
+      // maxIterations=200, pulseWaitMs=3 s (×2 per iter = 6 s total),
+      // stableThreshold=8 (~48 s of patience before giving up)
+      args: [200, 3000, 8],
     });
     groups = result ?? [];
   } catch (err) {
