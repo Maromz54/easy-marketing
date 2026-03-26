@@ -55,6 +55,7 @@ export function DashboardTabs({
   const editingList = distributionLists.find((l) => l.id === editingListId) ?? null;
 
   const [templateToLoad, setTemplateToLoad] = useState<TemplateRow | null>(null);
+  const [draftToResume, setDraftToResume] = useState<PostRow | null>(null);
   const [activeTab, setActiveTab] = useState("posts");
 
   const [isSyncing, setIsSyncing] = useState(false);
@@ -79,6 +80,12 @@ export function DashboardTabs({
 
   function handleUseTemplate(t: TemplateRow) {
     setTemplateToLoad(t);
+    setActiveTab("posts");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function handleResumeDraft(post: PostRow) {
+    setDraftToResume(post);
     setActiveTab("posts");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -188,6 +195,8 @@ export function DashboardTabs({
             onEditDone={handleEditDone}
             templateToLoad={templateToLoad}
             onTemplateLoaded={() => setTemplateToLoad(null)}
+            draftToResume={draftToResume}
+            onDraftResumed={() => setDraftToResume(null)}
           />
         </section>
         <PostsTable
@@ -195,6 +204,7 @@ export function DashboardTabs({
           onEdit={handleEdit}
           onCancel={handleCancelPost}
           cancellingId={cancellingId}
+          onResumeDraft={handleResumeDraft}
         />
       </TabsContent>
 

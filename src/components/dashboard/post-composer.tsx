@@ -126,6 +126,8 @@ interface PostComposerProps {
   onEditDone?: () => void;
   templateToLoad?: TemplateRow | null;
   onTemplateLoaded?: () => void;
+  draftToResume?: PostRow | null;
+  onDraftResumed?: () => void;
 }
 
 export function PostComposer({
@@ -135,6 +137,8 @@ export function PostComposer({
   onEditDone,
   templateToLoad,
   onTemplateLoaded,
+  draftToResume,
+  onDraftResumed,
 }: PostComposerProps) {
   const safePages = pages ?? [];
   const safeLists = distributionLists ?? [];
@@ -257,6 +261,38 @@ export function PostComposer({
     onTemplateLoaded?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateToLoad]);
+
+  // Resume a saved draft into the form when PostsTable fires "Resume Edit"
+  useEffect(() => {
+    if (!draftToResume) return;
+    const dr = draftToResume as PostRow & {
+      image_urls?: string[];
+      image_url?: string | null;
+      link_url?: string | null;
+    };
+    const imageUrls = dr.image_urls?.length
+      ? dr.image_urls
+      : dr.image_url
+      ? [dr.image_url]
+      : [];
+    form.reset({
+      facebookTokenId: EXTENSION_SENTINEL,
+      distributionListIds: [],
+      extraGroupIds: "",
+      targetId: "",
+      content: draftToResume.content,
+      imageUrls,
+      linkUrl: dr.link_url ?? "",
+      publishMode: "now",
+      scheduledAt: "",
+      recurrenceType: "none",
+      recurrenceDays: [],
+    });
+    setServerError(null);
+    setTemplateSaved(false);
+    onDraftResumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftToResume]);
 
   // Watched values — coerce to non-nullable so downstream code never crashes on
   // undefined (form.watch can return undefined before the first render commit).
