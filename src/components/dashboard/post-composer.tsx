@@ -74,8 +74,6 @@ const postSchema = z
     recurrenceType: z.enum(["none", "weekly", "monthly"]),
     // Selected weekdays (0=Sun … 6=Sat) when recurrenceType === "weekly"
     recurrenceDays: z.array(z.number()),
-    // Individual synced group IDs selected directly from the groups panel
-    selectedSyncedGroupIds: z.array(z.string()),
   })
   .superRefine((data, ctx) => {
     if (data.publishMode === "scheduled") {
@@ -122,12 +120,9 @@ const WEEKDAYS = [
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
-type FacebookGroupRow = Database["public"]["Tables"]["facebook_groups"]["Row"];
-
 interface PostComposerProps {
   pages?: FacebookToken[] | null;
   distributionLists?: DistributionListRow[] | null;
-  facebookGroups?: FacebookGroupRow[] | null;
   editingPost?: PostRow | null;
   onEditDone?: () => void;
   templateToLoad?: TemplateRow | null;
@@ -137,7 +132,6 @@ interface PostComposerProps {
 export function PostComposer({
   pages,
   distributionLists,
-  facebookGroups,
   editingPost,
   onEditDone,
   templateToLoad,
@@ -145,7 +139,6 @@ export function PostComposer({
 }: PostComposerProps) {
   const safePages = pages ?? [];
   const safeLists = distributionLists ?? [];
-  const safeGroups = facebookGroups ?? [];
   const isEditing = !!editingPost;
 
   const [serverError, setServerError] = useState<string | null>(null);
@@ -173,7 +166,6 @@ export function PostComposer({
       scheduledAt: "",
       recurrenceType: "none",
       recurrenceDays: [],
-      selectedSyncedGroupIds: [],
     },
   });
 
@@ -252,7 +244,6 @@ export function PostComposer({
       facebookTokenId: EXTENSION_SENTINEL,
       distributionListIds: [],
       extraGroupIds: "",
-      selectedSyncedGroupIds: [],
       targetId: "",
       content: templateToLoad.content,
       imageUrls: templateToLoad.image_urls ?? [],
@@ -278,15 +269,13 @@ export function PostComposer({
   const watchedExtraIds   = form.watch("extraGroupIds") ?? "";
   const recurrenceType           = form.watch("recurrenceType") ?? "none";
   const recurrenceDays           = form.watch("recurrenceDays") ?? [];
-  const watchedSyncedGroupIds    = form.watch("selectedSyncedGroupIds") ?? [];
   const contentLength            = watchedContent?.length ?? 0;
 
   const useExtension = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
 
   const useDistList =
     watchedDistIds.length > 0 ||
-    !!watchedExtraIds?.trim() ||
-    watchedSyncedGroupIds.length > 0;
+    !!watchedExtraIds?.trim();
 
   const totalGroupCount = useMemo(() => {
     const fromLists = safeLists
@@ -296,8 +285,8 @@ export function PostComposer({
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    return new Set([...fromLists, ...manual, ...watchedSyncedGroupIds]).size;
-  }, [watchedDistIds, watchedExtraIds, watchedSyncedGroupIds, safeLists]);
+    return new Set([...fromLists, ...manual]).size;
+  }, [watchedDistIds, watchedExtraIds, safeLists]);
 
   const minDateTime = new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16);
 
@@ -389,11 +378,10 @@ export function PostComposer({
           ? undefined
           : values.facebookTokenId?.trim() || undefined;
 
-      // Merge manual extra IDs with any synced groups checked directly
-      const extraGroupIds = [
-        ...(values.extraGroupIds ?? "").split(",").map((s) => s.trim()).filter(Boolean),
-        ...(values.selectedSyncedGroupIds ?? []),
-      ];
+      const extraGroupIds = (values.extraGroupIds ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
       const uniqueExtraGroupIds = [...new Set(extraGroupIds)];
 
       const result = await createPostAction({
@@ -545,7 +533,7 @@ export function PostComposer({
               )}
 
               {/* Distribution lists (checkbox panel, hidden in edit mode) */}
-              {!isEditing && (safeLists.length > 0 || safeGroups.length > 0) && (
+              {!isEditing && safeLists.length > 0 && (
                 <FormField
                   control={form.control}
                   name="distributionListIds"
@@ -567,11 +555,6 @@ export function PostComposer({
                         }
                         onChangeExtra={(val) =>
                           form.setValue("extraGroupIds", val, { shouldDirty: true })
-                        }
-                        syncedGroups={safeGroups}
-                        selectedSyncedGroupIds={watchedSyncedGroupIds}
-                        onChangeSyncedIds={(ids) =>
-                          form.setValue("selectedSyncedGroupIds", ids, { shouldDirty: true })
                         }
                       />
                       <FormMessage />

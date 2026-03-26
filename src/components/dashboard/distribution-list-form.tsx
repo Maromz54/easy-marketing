@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -14,6 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import {
   Form,
   FormControl,
@@ -27,30 +29,27 @@ import { Separator } from "@/components/ui/separator";
 import type { Database } from "@/lib/supabase/types";
 
 type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["Row"];
+type FacebookGroupRow = Database["public"]["Tables"]["facebook_groups"]["Row"];
 
 // ── Schema ────────────────────────────────────────────────────────────────────
+// groupIdsRaw is optional — the user can select groups via checkboxes instead.
+// Any IDs entered manually must still be numeric.
 const distributionListSchema = z.object({
   name: z
     .string()
     .min(1, { message: "שם הרשימה הוא חובה." })
     .max(100, { message: "השם ארוך מדי (מקסימום 100 תווים)." }),
-  groupIdsRaw: z
-    .string()
-    .min(1, { message: "יש להזין לפחות מזהה קבוצה אחד." })
-    .refine(
-      (v) => {
-        const ids = v.split(",").map((s) => s.trim()).filter(Boolean);
-        return ids.length > 0 && ids.every((id) => /^\d+$/.test(id));
-      },
-      { message: "כל מזהה קבוצה חייב להיות מספרי בלבד. הפרד בין מזהים בפסיק." }
-    )
-    .refine(
-      (v) => {
-        const ids = v.split(",").map((s) => s.trim()).filter(Boolean);
-        return ids.length <= 50;
-      },
-      { message: "ניתן להוסיף עד 50 קבוצות לרשימה." }
-    ),
+  groupIdsRaw: z.string().refine(
+    (v) => {
+      if (!v.trim()) return true; // empty is fine — checkboxes cover it
+      return v
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .every((id) => /^\d+$/.test(id));
+    },
+    { message: "כל מזהה קבוצה חייב להיות מספרי בלבד. הפרד בין מזהים בפסיק." }
+  ),
 });
 
 type DistributionListFormValues = z.infer<typeof distributionListSchema>;
@@ -59,13 +58,32 @@ type DistributionListFormValues = z.infer<typeof distributionListSchema>;
 interface DistributionListFormProps {
   editingList?: DistributionListRow | null;
   onEditDone?: () => void;
+  facebookGroups?: FacebookGroupRow[];
 }
 
-export function DistributionListForm({ editingList, onEditDone }: DistributionListFormProps) {
+export function DistributionListForm({
+  editingList,
+  onEditDone,
+  facebookGroups,
+}: DistributionListFormProps) {
   const isEditing = !!editingList;
+  const safeGroups = facebookGroups ?? [];
+
   const [serverError, setServerError] = useState<string | null>(null);
   const [successName, setSuccessName] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  // Visual group picker state (outside Zod — local UI state)
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [groupSearch, setGroupSearch] = useState("");
+
+  const filteredGroups = useMemo(() => {
+    const q = groupSearch.trim().toLowerCase();
+    if (!q) return safeGroups;
+    return safeGroups.filter(
+      (g) => g.name.toLowerCase().includes(q) || g.group_id.includes(q)
+    );
+  }, [safeGroups, groupSearch]);
 
   const form = useForm<DistributionListFormValues>({
     resolver: zodResolver(distributionListSchema),
@@ -75,31 +93,61 @@ export function DistributionListForm({ editingList, onEditDone }: DistributionLi
   // Pre-fill when entering edit mode
   useEffect(() => {
     if (editingList) {
+      // Split the stored group_ids into checkbox selections vs. manual overflow.
+      // Groups that exist in the synced list → pre-check their boxes.
+      // The rest (manually entered IDs not in the synced list) → put in the textarea.
+      const syncedIds = new Set(safeGroups.map((g) => g.group_id));
+      const preChecked = editingList.group_ids.filter((id) => syncedIds.has(id));
+      const manualOnly = editingList.group_ids.filter((id) => !syncedIds.has(id));
+
+      setSelectedGroupIds(preChecked);
       form.reset({
         name: editingList.name,
-        groupIdsRaw: editingList.group_ids.join(", "),
+        groupIdsRaw: manualOnly.join(", "),
       });
       setServerError(null);
       setSuccessName(null);
+      setGroupSearch("");
     } else {
+      setSelectedGroupIds([]);
       form.reset({ name: "", groupIdsRaw: "" });
+      setGroupSearch("");
     }
-  }, [editingList, form]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingList]);
+
+  function toggleGroup(groupId: string) {
+    setSelectedGroupIds((prev) =>
+      prev.includes(groupId) ? prev.filter((x) => x !== groupId) : [...prev, groupId]
+    );
+  }
 
   function onSubmit(values: DistributionListFormValues) {
     setServerError(null);
     setSuccessName(null);
-    startTransition(async () => {
-      const groupIds = values.groupIdsRaw
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
 
+    // Combine checkbox selections with manually entered IDs
+    const manualIds = values.groupIdsRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const combinedIds = [...new Set([...selectedGroupIds, ...manualIds])];
+
+    if (combinedIds.length === 0) {
+      setServerError("יש לבחור לפחות קבוצה אחת.");
+      return;
+    }
+    if (combinedIds.length > 50) {
+      setServerError(`נבחרו ${combinedIds.length} קבוצות — ניתן להוסיף עד 50 קבוצות לרשימה.`);
+      return;
+    }
+
+    startTransition(async () => {
       if (isEditing && editingList) {
         const result = await updateDistributionListAction({
           id: editingList.id,
           name: values.name,
-          groupIds,
+          groupIds: combinedIds,
         });
         if (result.error) {
           setServerError(result.error);
@@ -107,11 +155,15 @@ export function DistributionListForm({ editingList, onEditDone }: DistributionLi
           onEditDone?.();
         }
       } else {
-        const result = await createDistributionListAction({ name: values.name, groupIds });
+        const result = await createDistributionListAction({
+          name: values.name,
+          groupIds: combinedIds,
+        });
         if (result.error) {
           setServerError(result.error);
         } else {
           setSuccessName(values.name);
+          setSelectedGroupIds([]);
           form.reset();
         }
       }
@@ -170,23 +222,102 @@ export function DistributionListForm({ editingList, onEditDone }: DistributionLi
               )}
             />
 
-            {/* Group IDs */}
+            {/* ── Visual group picker (shown only when synced groups exist) ── */}
+            {safeGroups.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">
+                    בחר קבוצות מסונכרנות ({safeGroups.length})
+                  </Label>
+                  {selectedGroupIds.length > 0 && (
+                    <span className="text-xs text-purple-700 font-medium">
+                      {selectedGroupIds.length} נבחרו
+                    </span>
+                  )}
+                </div>
+
+                <Input
+                  placeholder="חפש קבוצה לפי שם או מזהה..."
+                  dir="rtl"
+                  className="h-8 text-xs"
+                  value={groupSearch}
+                  onChange={(e) => setGroupSearch(e.target.value)}
+                />
+
+                <div className="rounded-md border border-input bg-muted/30 max-h-60 overflow-y-auto divide-y divide-border">
+                  {filteredGroups.length === 0 ? (
+                    <p className="px-3 py-3 text-xs text-muted-foreground">לא נמצאו קבוצות</p>
+                  ) : (
+                    filteredGroups.map((group) => {
+                      const checked = selectedGroupIds.includes(group.group_id);
+                      return (
+                        <label
+                          key={group.group_id}
+                          htmlFor={`fg-${group.group_id}`}
+                          className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer transition-colors hover:bg-muted/60 ${
+                            checked ? "bg-purple-50/60" : ""
+                          }`}
+                        >
+                          <Checkbox
+                            id={`fg-${group.group_id}`}
+                            checked={checked}
+                            onCheckedChange={() => toggleGroup(group.group_id)}
+                          />
+                          {group.icon_url && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={group.icon_url}
+                              alt=""
+                              className="h-7 w-7 rounded-full object-cover shrink-0"
+                            />
+                          )}
+                          <span className="flex-1 min-w-0">
+                            <span className="block text-sm truncate">{group.name}</span>
+                            <span className="text-xs text-muted-foreground font-mono">
+                              {group.group_id}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+
+                {selectedGroupIds.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                    onClick={() => setSelectedGroupIds([])}
+                  >
+                    נקה בחירה
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Manual group IDs (fallback / extra) */}
             <FormField
               control={form.control}
               name="groupIdsRaw"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>מזהי קבוצות (מופרדים בפסיק)</FormLabel>
+                  <FormLabel>
+                    {safeGroups.length > 0
+                      ? "מזהי קבוצות נוספים (אופציונלי)"
+                      : "מזהי קבוצות (מופרדים בפסיק)"}
+                  </FormLabel>
                   <FormControl>
                     <Textarea
                       placeholder="123456789012345, 987654321098765, 112233445566778"
                       dir="ltr"
-                      className="min-h-[80px] font-mono text-sm"
+                      className="min-h-[64px] font-mono text-sm"
                       {...field}
                     />
                   </FormControl>
                   <FormDescription className="text-xs">
-                    הזן את מזהי קבוצות הפייסבוק מופרדים בפסיקים. המזהה מופיע בכתובת הקבוצה (מספרים בלבד).
+                    {safeGroups.length > 0
+                      ? "הדבק כאן מזהי קבוצות שאינם ברשימה המסונכרנת."
+                      : "הזן את מזהי קבוצות הפייסבוק מופרדים בפסיקים. המזהה מופיע בכתובת הקבוצה (מספרים בלבד)."}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

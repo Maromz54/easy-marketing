@@ -239,16 +239,54 @@ async function checkForSyncJob(config) {
     return;
   }
 
-  // Let the Facebook SPA render
+  // Let the Facebook SPA render before we start scrolling
   await sleep(5000);
 
-  // Scroll 3× to trigger lazy-loaded groups
-  for (let i = 0; i < 3; i++) {
+  // ── Deep scroll: keep scrolling until the page height stops growing ──────
+  // Facebook lazy-loads groups as you scroll. We loop up to 20 times, waiting
+  // 2.5 s after each scroll for the network/DOM to settle. When the height
+  // hasn't grown since the last attempt we know all content is loaded.
+  const MAX_SCROLL_ATTEMPTS = 20;
+  const SCROLL_PAUSE_MS     = 2500;
+
+  // Capture the starting height before the first scroll
+  let prevHeight = 0;
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => document.body.scrollHeight,
+    });
+    prevHeight = result ?? 0;
+  } catch { /* ignore — first comparison will always advance */ }
+
+  for (let attempt = 0; attempt < MAX_SCROLL_ATTEMPTS; attempt++) {
+    // Scroll to the very bottom
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => window.scrollTo(0, document.body.scrollHeight),
     }).catch(() => {});
-    await sleep(2000);
+
+    // Wait for FB to fetch and render the next batch of groups
+    await sleep(SCROLL_PAUSE_MS);
+
+    // Read the new height
+    let newHeight = 0;
+    try {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => document.body.scrollHeight,
+      });
+      newHeight = result ?? 0;
+    } catch { break; }
+
+    console.log(`[EasyMarketing] Scroll ${attempt + 1}/${MAX_SCROLL_ATTEMPTS}: ${prevHeight}px → ${newHeight}px`);
+
+    if (newHeight <= prevHeight) {
+      // Height didn't grow — all groups are in the DOM
+      console.log("[EasyMarketing] Page height stabilized — all groups loaded.");
+      break;
+    }
+    prevHeight = newHeight;
   }
 
   // Scrape all group links with numeric IDs

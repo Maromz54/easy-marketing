@@ -182,7 +182,6 @@ export function DashboardTabs({
           <PostComposer
             pages={pages}
             distributionLists={distributionLists}
-            facebookGroups={facebookGroups}
             editingPost={editingPost}
             onEditDone={handleEditDone}
             templateToLoad={templateToLoad}
@@ -247,13 +246,14 @@ export function DashboardTabs({
 
           {facebookGroups.length > 0 && (
             <p className="text-sm text-muted-foreground">
-              {facebookGroups.length} קבוצות מסונכרנות — זמינות לבחירה בעת יצירת פוסט.
+              {facebookGroups.length} קבוצות מסונכרנות — בחר אותן ישירות בטופס יצירת הרשימה למטה.
             </p>
           )}
 
           <DistributionListForm
             editingList={editingList}
             onEditDone={() => setEditingListId(null)}
+            facebookGroups={facebookGroups}
           />
         </section>
 
