@@ -185,14 +185,14 @@ export function DistributionListForm({
       <div className="p-6 space-y-5">
         {/* Success */}
         {successName && (
-          <div className="flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
+          <div role="status" aria-live="polite" className="flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>הרשימה <strong>{successName}</strong> נוצרה בהצלחה!</span>
           </div>
         )}
 
         {serverError && (
-          <div className="rounded-xl bg-red-50/60 border border-red-100 px-4 py-3 text-sm text-red-600">
+          <div role="alert" className="rounded-xl bg-red-50/60 border border-red-100 px-4 py-3 text-sm text-red-600">
             {serverError}
           </div>
         )}
@@ -229,7 +229,8 @@ export function DistributionListForm({
                     {selectedGroupIds.length > 0 && (
                       <button
                         type="button"
-                        className="text-xs text-slate-400 hover:text-slate-600 transition-colors duration-200"
+                        aria-label="נקה את כל הקבוצות שנבחרו"
+                        className="text-xs text-slate-400 hover:text-slate-600 transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-1 rounded"
                         onClick={() => setSelectedGroupIds([])}
                       >
                         נקה הכל
@@ -237,7 +238,8 @@ export function DistributionListForm({
                     )}
                     <button
                       type="button"
-                      className="text-xs text-blue-600 hover:text-blue-700 font-medium transition-colors duration-200"
+                      aria-label="בחר את כל הקבוצות המסונכרנות"
+                      className="text-xs text-blue-600 hover:text-blue-700 font-medium transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-1 rounded"
                       onClick={selectAll}
                     >
                       בחר הכל
@@ -254,6 +256,7 @@ export function DistributionListForm({
                   <Input
                     placeholder="חפש קבוצה..."
                     dir="rtl"
+                    aria-label="חפש קבוצה מסונכרנת"
                     className="h-9 text-sm rounded-xl border-slate-200 ps-9 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300 transition-all duration-200"
                     value={groupSearch}
                     onChange={(e) => setGroupSearch(e.target.value)}
@@ -350,7 +353,8 @@ export function DistributionListForm({
               <Button
                 type="submit"
                 disabled={isPending}
-                className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm hover:shadow-md transition-all duration-200"
+                aria-busy={isPending}
+                className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm hover:shadow-md transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
               >
                 {isPending ? (
                   <>
@@ -370,7 +374,8 @@ export function DistributionListForm({
                   variant="outline"
                   onClick={onEditDone}
                   disabled={isPending}
-                  className="rounded-xl border-slate-200 hover:bg-slate-50 transition-all duration-200"
+                  aria-label="ביטול עריכת רשימה"
+                  className="rounded-xl border-slate-200 hover:bg-slate-50 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
                 >
                   ביטול
                 </Button>

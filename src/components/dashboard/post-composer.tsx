@@ -472,7 +472,8 @@ export function PostComposer({
               type="button"
               variant="ghost"
               size="sm"
-              className="text-slate-400 hover:text-slate-600 text-xs rounded-xl"
+              aria-label="ביטול עריכה"
+              className="text-slate-400 hover:text-slate-600 text-xs rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
               onClick={onEditDone}
             >
               <X className="h-3.5 w-3.5 ms-1" />
@@ -485,7 +486,7 @@ export function PostComposer({
       <div className="p-6">
         {/* Notices */}
         {!isEditing && useExtension && !useDistList && (
-          <div className="mb-5 flex items-start gap-2.5 rounded-xl bg-blue-50/60 border border-blue-100 px-4 py-3 text-sm text-blue-700">
+          <div role="status" className="mb-5 flex items-start gap-2.5 rounded-xl bg-blue-50/60 border border-blue-100 px-4 py-3 text-sm text-blue-700">
             <Puzzle className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
               הפוסט יישמר במסד הנתונים ויפורסם על ידי{" "}
@@ -495,7 +496,7 @@ export function PostComposer({
         )}
 
         {!isEditing && useDistList && (
-          <div className="mb-5 flex items-start gap-2.5 rounded-xl bg-violet-50/60 border border-violet-100 px-4 py-3 text-sm text-violet-700">
+          <div role="status" className="mb-5 flex items-start gap-2.5 rounded-xl bg-violet-50/60 border border-violet-100 px-4 py-3 text-sm text-violet-700">
             <ListChecks className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
               הפוסט יפורסם ל-<strong>{totalGroupCount} קבוצות ייחודיות</strong> —
@@ -505,7 +506,7 @@ export function PostComposer({
         )}
 
         {isSuccess && (
-          <div className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
+          <div role="status" aria-live="polite" className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>
               {successCount && successCount > 1
@@ -518,14 +519,14 @@ export function PostComposer({
         )}
 
         {templateSaved && (
-          <div className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
+          <div role="status" aria-live="polite" className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50/60 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             התבנית נשמרה בהצלחה! תמצא אותה בלשונית התבניות.
           </div>
         )}
 
         {serverError && (
-          <div className="mb-4 rounded-xl bg-red-50/60 border border-red-100 px-4 py-3 text-sm text-red-600">
+          <div role="alert" className="mb-4 rounded-xl bg-red-50/60 border border-red-100 px-4 py-3 text-sm text-red-600">
             {serverError}
           </div>
         )}
@@ -698,7 +699,8 @@ export function PostComposer({
                             <button
                               type="button"
                               onClick={() => removeImage(idx)}
-                              className="absolute -top-1.5 -end-1.5 h-5 w-5 rounded-full bg-destructive text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                              aria-label={`הסר תמונה ${idx + 1}`}
+                              className="absolute -top-1.5 -end-1.5 h-5 w-5 rounded-full bg-destructive text-white flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-1"
                             >
                               <X className="h-3 w-3" />
                             </button>
@@ -916,8 +918,9 @@ export function PostComposer({
               <div className="flex flex-wrap gap-2.5 pt-1">
                 <Button
                   type="submit"
-                  className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm hover:shadow-md transition-all duration-200"
+                  className="w-full sm:w-auto rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm hover:shadow-md transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
                   disabled={isPending || isUploading}
+                  aria-busy={isPending}
                 >
                   {isPending ? (
                     <><Loader2 className="ms-2 h-4 w-4 animate-spin" />שומר...</>
@@ -934,7 +937,8 @@ export function PostComposer({
                   <Button
                     type="button"
                     variant="outline"
-                    className="w-full sm:w-auto rounded-xl border-slate-200 hover:bg-slate-50 transition-all duration-200"
+                    aria-label="שמור כתבנית"
+                    className="w-full sm:w-auto rounded-xl border-slate-200 hover:bg-slate-50 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
                     disabled={isPending || isUploading}
                     onClick={() => {
                       const values = form.getValues();

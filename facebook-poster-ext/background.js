@@ -266,6 +266,40 @@ async function checkForSyncJob(config) {
         // Accumulator — survives DOM virtualisation between iterations
         const accumulated = new Map(); // groupId → { groupId, name, iconUrl }
 
+        // ── Stop-word boundary detection ──────────────────────────────────
+        // Facebook appends "Suggested for you" / "הצעות עבורך" sections BELOW
+        // the user's real joined groups. Once we see these headers we must
+        // stop collecting — everything after is suggested/promotional content.
+        const STOP_WORDS = [
+          "suggested",
+          "more to discover",
+          "הצעות עבורך",
+          "קבוצות שאתה עשוי לאהוב",
+          "קבוצות מוצעות",
+        ];
+        let hitBoundary = false;
+
+        function checkBoundary() {
+          if (hitBoundary) return true;
+          const headings = document.querySelectorAll(
+            'h2, h3, h4, [role="heading"], span[dir="auto"]'
+          );
+          for (const h of headings) {
+            const text = (h.textContent ?? "").trim().toLowerCase();
+            if (!text) continue;
+            for (const stop of STOP_WORDS) {
+              if (text.includes(stop.toLowerCase())) {
+                console.log(
+                  `[EasyMarketing] ⛔ Boundary hit: "${h.textContent?.trim()}" — stopping collection.`
+                );
+                hitBoundary = true;
+                return true;
+              }
+            }
+          }
+          return false;
+        }
+
         // Returns true when text looks like descriptive meta-text (member
         // counts, "suggested" labels) rather than a real group name.
         function isMeta(text) {
@@ -277,6 +311,8 @@ async function checkForSyncJob(config) {
         }
 
         function extractVisible() {
+          if (hitBoundary) return; // Don't collect past the boundary
+
           // ── Strategy 1: <a href="/groups/<numeric>/"> links ──────────────
           for (const link of document.querySelectorAll('a[href*="/groups/"]')) {
             const match = link.href.match(/\/groups\/(\d{5,})\b/);
@@ -285,10 +321,6 @@ async function checkForSyncJob(config) {
             if (accumulated.has(groupId)) continue;
 
             // ── Name: look INSIDE the <a> element first ───────────────────
-            // FB always places the group title as a descendant of the link.
-            // Member-count text (e.g. "81 חברים בקבוצה") lives OUTSIDE the
-            // link in a sibling span, so restricting to link descendants
-            // eliminates it completely.
             let name = "";
 
             // P1 — heading / dir="auto" span that is a child of the link
@@ -307,7 +339,6 @@ async function checkForSyncJob(config) {
             }
 
             // P3 — walk up to the enclosing card and look for a heading
-            // outside the link, but only accept it if it passes isMeta().
             if (!name) {
               const card =
                 link.closest('[role="listitem"]') ??
@@ -342,7 +373,7 @@ async function checkForSyncJob(config) {
             });
           }
 
-          // ── Strategy 2: data-groupid attributes (widget / sidebar) ───────
+          // ── Strategy 2: data-groupid attributes ──────────────────────────
           for (const el of document.querySelectorAll("[data-groupid]")) {
             const groupId = el.getAttribute("data-groupid");
             if (!groupId || !/^\d{5,}$/.test(groupId) || accumulated.has(groupId))
@@ -366,9 +397,16 @@ async function checkForSyncJob(config) {
         let lastSize = accumulated.size;
 
         for (let i = 0; i < maxIterations; i++) {
-          // Scroll the last known group link into view. scrollIntoView()
-          // automatically targets the correct scrollable ancestor — window
-          // or an inner FB div — so it works regardless of page layout.
+          // Check if we've scrolled past the joined groups into the
+          // "Suggested" section — if so, stop immediately.
+          if (checkBoundary()) {
+            console.log(
+              `[EasyMarketing] Stopping at iteration ${i + 1} — boundary reached (total: ${accumulated.size})`
+            );
+            break;
+          }
+
+          // Scroll the last rendered group link into view.
           const allGroupLinks = [
             ...document.querySelectorAll('a[href*="/groups/"]'),
           ].filter((el) => /\/groups\/(\d{5,})\b/.test(el.href));
@@ -377,7 +415,6 @@ async function checkForSyncJob(config) {
             lastEl.scrollIntoView({ behavior: "smooth", block: "end" });
           }
 
-          // 6 s wait — generous enough for slow connections and large lists
           await sleep(waitMs);
 
           const sizeBefore = accumulated.size;
@@ -403,8 +440,8 @@ async function checkForSyncJob(config) {
 
         return [...accumulated.values()];
       },
-      // maxIterations=60, waitMs=6 s, stableThreshold=5 consecutive identical sizes
-      args: [60, 6000, 5],
+      // maxIterations=200 (covers 600+ groups), waitMs=6 s, stableThreshold=5
+      args: [200, 6000, 5],
     });
     groups = result ?? [];
   } catch (err) {
