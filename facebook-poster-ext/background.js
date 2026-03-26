@@ -221,12 +221,12 @@ async function checkForSyncJob(config) {
 
   console.log("[EasyMarketing] Sync job found — opening Facebook groups page...");
 
-  // Use /groups/joined/ — it lists all user groups in a clean layout,
-  // unlike /groups/feed/ which mixes posts with group cards.
+  // Use the canonical "joined groups" URL with viewer_added ordering so the
+  // page renders all groups the user belongs to in a consistent list layout.
   let tab;
   try {
     tab = await chrome.tabs.create({
-      url: "https://www.facebook.com/groups/joined/",
+      url: "https://www.facebook.com/groups/joins/?nav_source=tab&ordering=viewer_added",
       active: false,
     });
   } catch (err) {
