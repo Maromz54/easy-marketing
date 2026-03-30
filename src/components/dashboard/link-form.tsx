@@ -35,12 +35,15 @@ const linkSchema = z.object({
       { message: "אנא הזן כתובת URL תקינה." }
     ),
   label: z.string().trim().max(80, { message: "השם ארוך מדי (מקסימום 80 תווים)." }).optional(),
+  // Form inputs always produce strings (never undefined), so we must NOT use
+  // .optional() here — it inserts ZodOptional between .trim() and .refine(),
+  // breaking the execution order in Zod v4's resolver path.
+  // Empty string is explicitly allowed and converted to undefined in onSubmit.
   customSlug: z
     .string()
     .trim()
-    .optional()
     .refine(
-      (v) => !v || /^[a-z0-9_-]{2,50}$/.test(v),
+      (v) => v === "" || /^[a-z0-9_-]{2,50}$/.test(v),
       { message: "הסיומת יכולה להכיל רק אותיות אנגלית קטנות, מספרים, מקף ו-underscore (2–50 תווים)." }
     ),
 });
