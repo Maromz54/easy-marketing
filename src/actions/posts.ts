@@ -444,10 +444,12 @@ export async function createPostAction(
       user_id: user.id,
       facebook_token_id: input.facebookTokenId,
       target_id: targetId,
-      content: input.content,
+      content: resolveSpintax(input.content),
       image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
       recurrence_rule: recurrenceRule,
+      auto_bump_enabled: autoBumpEnabled,
+      bump_interval_hours: bumpIntervalHours,
       status: "scheduled",
       scheduled_at: new Date(input.scheduledAt!).toISOString(),
     });
@@ -462,9 +464,10 @@ export async function createPostAction(
   }
 
   // ── Immediate publish → Graph API /{targetId}/feed ─────────────────────
+  const resolvedContent = resolveSpintax(input.content);
   try {
     const facebookPostId = await publishToPage(targetId, token.access_token, {
-      message: input.content,
+      message: resolvedContent,
       link: input.linkUrl || undefined,
       picture: input.imageUrls?.[0] || undefined,
     });
@@ -473,10 +476,12 @@ export async function createPostAction(
       user_id: user.id,
       facebook_token_id: input.facebookTokenId,
       target_id: targetId,
-      content: input.content,
+      content: resolvedContent,
       image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
       recurrence_rule: recurrenceRule,
+      auto_bump_enabled: autoBumpEnabled,
+      bump_interval_hours: bumpIntervalHours,
       status: "published",
       published_at: new Date().toISOString(),
       facebook_post_id: facebookPostId,
@@ -497,10 +502,12 @@ export async function createPostAction(
       user_id: user.id,
       facebook_token_id: input.facebookTokenId,
       target_id: targetId,
-      content: input.content,
+      content: resolvedContent,
       image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
       recurrence_rule: recurrenceRule,
+      auto_bump_enabled: autoBumpEnabled,
+      bump_interval_hours: bumpIntervalHours,
       status: "failed",
       error_message: message,
     });

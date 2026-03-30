@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     const { data: post } = await supabase
       .from("posts")
       .select(
-        "recurrence_rule, scheduled_at, content, image_urls, link_url, target_id, facebook_token_id, user_id"
+        "recurrence_rule, scheduled_at, content, image_urls, link_url, target_id, facebook_token_id, user_id, auto_bump_enabled, bump_interval_hours"
       )
       .eq("id", postId)
       .single();
@@ -72,6 +72,8 @@ export async function POST(request: NextRequest) {
           image_urls: post.image_urls ?? [],
           link_url: post.link_url,
           recurrence_rule: post.recurrence_rule,
+          auto_bump_enabled: post.auto_bump_enabled ?? false,
+          bump_interval_hours: post.bump_interval_hours ?? null,
           status: "scheduled",
           scheduled_at: nextDate.toISOString(),
         });

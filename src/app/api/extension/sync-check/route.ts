@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const supabase = createServiceClient();
 
   // Find and atomically mark the first pending sync job as 'processing'
-  const { data: job } = await supabase
+  const { data: job, error } = await supabase
     .from("sync_jobs")
     .update({ status: "processing" })
     .eq("status", "pending")
@@ -21,6 +21,11 @@ export async function GET(request: NextRequest) {
     .select("id, user_id")
     .limit(1)
     .maybeSingle();
+
+  if (error) {
+    console.error("[sync-check] DB error:", error.message);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   if (!job) {
     return NextResponse.json({ job: null });

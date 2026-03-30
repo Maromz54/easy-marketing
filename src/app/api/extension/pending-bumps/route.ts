@@ -19,6 +19,7 @@ export async function GET(request: NextRequest) {
     .select("id, target_id, facebook_post_id, bump_interval_hours, last_bumped_at, published_at")
     .eq("status", "published")
     .eq("auto_bump_enabled", true)
+    .eq("is_template", false)
     .not("bump_interval_hours", "is", null);
 
   if (error) {
