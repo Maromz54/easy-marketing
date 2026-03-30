@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { publishToPage } from "@/lib/facebook";
+import { resolveSpintax } from "@/utils/spintax";
 
 export interface CreatePostInput {
   /** When omitted the post is queued for the Chrome Extension (no Graph API call). */
@@ -20,6 +21,10 @@ export interface CreatePostInput {
   scheduledAt?: string;
   /** Recurrence rule: "weekly:0,1,5" or "monthly". Null / omitted = one-time. */
   recurrenceRule?: string;
+  /** Auto-bump: periodically comment on the published post to push it up. */
+  autoBumpEnabled?: boolean;
+  /** Hours between auto-bump comments (1–168). */
+  bumpIntervalHours?: number;
 }
 
 export interface CreatePostResult {
@@ -289,6 +294,8 @@ export async function createPostAction(
 
   const hasToken = !!input.facebookTokenId?.trim();
   const recurrenceRule = input.recurrenceRule?.trim() || null;
+  const autoBumpEnabled = input.autoBumpEnabled ?? false;
+  const bumpIntervalHours = autoBumpEnabled ? (input.bumpIntervalHours ?? null) : null;
 
   // ── Multi-distribution / extra-groups fan-out ──────────────────────────
   // Triggered when any distribution lists or manual extra group IDs are provided.
@@ -345,16 +352,21 @@ export async function createPostAction(
     for (const groupId of uniqueGroupIds) {
       const scheduledAt = new Date(baseTime.getTime() + cumulativeDelaySec * 1000).toISOString();
 
+      // Resolve spintax per-group so every row gets a unique text variation
+      const finalContent = resolveSpintax(input.content);
+
       console.log(`[createPostAction] inserting row ${insertedCount + 1}/${uniqueGroupIds.length} target_id="${groupId}" scheduled_at="${scheduledAt}"`);
 
       const { error: dbError } = await supabase.from("posts").insert({
         user_id: user.id,
         facebook_token_id: null,
         target_id: groupId,
-        content: input.content,
+        content: finalContent,
         image_urls: input.imageUrls ?? [],
         link_url: input.linkUrl || null,
         recurrence_rule: recurrenceRule,
+        auto_bump_enabled: autoBumpEnabled,
+        bump_interval_hours: bumpIntervalHours,
         status: "scheduled" as const,
         scheduled_at: scheduledAt,
       });
@@ -392,10 +404,12 @@ export async function createPostAction(
       user_id: user.id,
       facebook_token_id: null,
       target_id: input.targetId?.trim() || null,
-      content: input.content,
+      content: resolveSpintax(input.content),
       image_urls: input.imageUrls ?? [],
       link_url: input.linkUrl || null,
       recurrence_rule: recurrenceRule,
+      auto_bump_enabled: autoBumpEnabled,
+      bump_interval_hours: bumpIntervalHours,
       status: "scheduled",
       scheduled_at: scheduledAt,
     });

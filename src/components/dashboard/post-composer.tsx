@@ -7,9 +7,11 @@ import { z } from "zod";
 import {
   Loader2, Send, CalendarClock, Image as ImageIcon,
   Link2, CheckCircle2, Target, Puzzle, ListChecks, Pencil, X, Upload, RefreshCw,
+  Shuffle, Bell,
 } from "lucide-react";
 
 import { createPostAction, updatePostAction, saveAsTemplateAction } from "@/actions/posts";
+import { hasSpintax } from "@/utils/spintax";
 import type { TemplateRow } from "@/components/dashboard/templates-tab";
 import { createClient } from "@/lib/supabase/client";
 import { PostPreview } from "@/components/dashboard/post-preview";
@@ -73,6 +75,9 @@ const postSchema = z
     recurrenceType: z.enum(["none", "weekly", "monthly"]),
     // Selected weekdays (0=Sun … 6=Sat) when recurrenceType === "weekly"
     recurrenceDays: z.array(z.number()),
+    // Auto-bump: periodically comment on the published post to push it up
+    autoBumpEnabled: z.boolean(),
+    bumpIntervalHours: z.number().int().min(1).max(168).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.publishMode === "scheduled") {
@@ -98,6 +103,13 @@ const postSchema = z
         code: z.ZodIssueCode.custom,
         message: "בחר לפחות יום אחד לחזרה שבועית.",
         path: ["recurrenceDays"],
+      });
+    }
+    if (data.autoBumpEnabled && (!data.bumpIntervalHours || data.bumpIntervalHours < 1)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "יש להזין מרווח שעות תקין (1–168).",
+        path: ["bumpIntervalHours"],
       });
     }
   });
@@ -169,6 +181,8 @@ export function PostComposer({
       scheduledAt: "",
       recurrenceType: "none",
       recurrenceDays: [],
+      autoBumpEnabled: false,
+      bumpIntervalHours: 24,
     },
   });
 
@@ -220,6 +234,8 @@ export function PostComposer({
         scheduledAt: localScheduledAt,
         recurrenceType,
         recurrenceDays,
+        autoBumpEnabled: (editingPost as any).auto_bump_enabled ?? false,
+        bumpIntervalHours: (editingPost as any).bump_interval_hours ?? 24,
       });
     } else {
       form.reset({
@@ -234,6 +250,8 @@ export function PostComposer({
         scheduledAt: "",
         recurrenceType: "none",
         recurrenceDays: [],
+        autoBumpEnabled: false,
+        bumpIntervalHours: 24,
       });
     }
     setUploadError(null);
@@ -255,6 +273,8 @@ export function PostComposer({
       scheduledAt: "",
       recurrenceType: "none",
       recurrenceDays: [],
+      autoBumpEnabled: false,
+      bumpIntervalHours: 24,
     });
     setServerError(null);
     setTemplateSaved(false);
@@ -287,6 +307,8 @@ export function PostComposer({
       scheduledAt: "",
       recurrenceType: "none",
       recurrenceDays: [],
+      autoBumpEnabled: (draftToResume as any).auto_bump_enabled ?? false,
+      bumpIntervalHours: (draftToResume as any).bump_interval_hours ?? 24,
     });
     setServerError(null);
     setTemplateSaved(false);
@@ -304,6 +326,7 @@ export function PostComposer({
   const watchedExtraIds   = form.watch("extraGroupIds") ?? "";
   const recurrenceType           = form.watch("recurrenceType") ?? "none";
   const recurrenceDays           = form.watch("recurrenceDays") ?? [];
+  const autoBumpEnabled          = form.watch("autoBumpEnabled") ?? false;
   const contentLength            = watchedContent?.length ?? 0;
 
   const useExtension = safePages.length === 0 || watchedTokenId === EXTENSION_SENTINEL;
@@ -430,6 +453,8 @@ export function PostComposer({
         publishMode: values.publishMode,
         scheduledAt: values.scheduledAt ? new Date(values.scheduledAt).toISOString() : undefined,
         recurrenceRule: resolvedRecurrenceRule,
+        autoBumpEnabled: values.autoBumpEnabled || undefined,
+        bumpIntervalHours: values.autoBumpEnabled ? values.bumpIntervalHours : undefined,
       });
 
       if (result.error) {
@@ -445,6 +470,8 @@ export function PostComposer({
           publishMode: "now",
           recurrenceType: "none",
           recurrenceDays: [],
+          autoBumpEnabled: false,
+          bumpIntervalHours: 24,
         });
         setTimeout(() => { setIsSuccess(false); setSuccessCount(null); }, 5000);
       }
@@ -659,6 +686,23 @@ export function PostComposer({
                         {...field}
                       />
                     </FormControl>
+                    {/* Spintax hint & live indicator */}
+                    {hasSpintax(watchedContent ?? "") ? (
+                      <div className="flex items-center gap-1.5 text-xs text-violet-600 mt-1.5">
+                        <Shuffle className="h-3 w-3" />
+                        <span>
+                          Spintax זוהה — כל קבוצה תקבל גרסה ייחודית של הטקסט
+                        </span>
+                      </div>
+                    ) : (
+                      <FormDescription className="text-xs text-slate-400 mt-1">
+                        <span className="font-medium text-slate-500">טיפ:</span>{" "}
+                        השתמש ב-Spintax ליצירת גרסאות —{" "}
+                        <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px] font-mono text-slate-600">
+                          {"{מדהים|נפלא}"} דירה למכירה
+                        </code>
+                      </FormDescription>
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -912,6 +956,78 @@ export function PostComposer({
                     )}
                   </div>
                 </>
+              )}
+
+              {/* Auto-bump section */}
+              {!isEditing && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50/40 px-4 py-3 space-y-3">
+                  <FormField
+                    control={form.control}
+                    name="autoBumpEnabled"
+                    render={({ field }) => (
+                      <FormItem className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                          <Bell className="h-3.5 w-3.5" />
+                          <div>
+                            <span className="text-slate-700">Auto-Bump</span>
+                            <p className="text-xs font-normal text-slate-400 mt-0.5">
+                              תגובה אוטומטית לפוסט כדי להעלות אותו בפיד
+                            </p>
+                          </div>
+                        </div>
+                        <FormControl>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={field.value}
+                            aria-label="הפעל Auto-Bump"
+                            onClick={() => field.onChange(!field.value)}
+                            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 ${
+                              field.value ? "bg-blue-600" : "bg-slate-200"
+                            }`}
+                          >
+                            <span
+                              className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm ring-0 transition-transform duration-200 ${
+                                field.value ? "-translate-x-5" : "translate-x-0"
+                              }`}
+                            />
+                          </button>
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  {autoBumpEnabled && (
+                    <FormField
+                      control={form.control}
+                      name="bumpIntervalHours"
+                      render={({ field }) => (
+                        <FormItem>
+                          <div className="flex items-center gap-2">
+                            <FormLabel className="text-xs text-slate-600 whitespace-nowrap">
+                              מרווח בין באמפים
+                            </FormLabel>
+                            <FormControl>
+                              <Input
+                                type="number"
+                                min={1}
+                                max={168}
+                                dir="ltr"
+                                className="h-8 w-20 text-center text-sm rounded-lg"
+                                {...field}
+                              />
+                            </FormControl>
+                            <span className="text-xs text-slate-400">שעות</span>
+                          </div>
+                          <FormDescription className="text-[11px] text-slate-400">
+                            1 = כל שעה, 24 = פעם ביום, 168 = פעם בשבוע
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
+                </div>
               )}
 
               {/* Submit row */}

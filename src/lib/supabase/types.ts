@@ -93,6 +93,9 @@ export type Database = {
           error_message: string | null;
           recurrence_rule: string | null;
           is_template: boolean;
+          auto_bump_enabled: boolean;
+          bump_interval_hours: number | null;
+          last_bumped_at: string | null;
           created_at: string;
         };
         Insert: {
@@ -111,6 +114,9 @@ export type Database = {
           error_message?: string | null;
           recurrence_rule?: string | null;
           is_template?: boolean;
+          auto_bump_enabled?: boolean;
+          bump_interval_hours?: number | null;
+          last_bumped_at?: string | null;
           created_at?: string;
         };
         Update: {
@@ -129,6 +135,9 @@ export type Database = {
           error_message?: string | null;
           recurrence_rule?: string | null;
           is_template?: boolean;
+          auto_bump_enabled?: boolean;
+          bump_interval_hours?: number | null;
+          last_bumped_at?: string | null;
           created_at?: string;
         };
         Relationships: [

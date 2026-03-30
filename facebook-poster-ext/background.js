@@ -66,6 +66,11 @@ async function runQueue() {
     // After the post queue drains, pick up any pending group-sync jobs.
     await checkForSyncJob(config);
 
+    // After sync, check for auto-bump jobs.
+    if (Date.now() - queueStart < QUEUE_LIMIT_MS) {
+      await checkForBumpJob(config);
+    }
+
   } finally {
     _queueRunning = false;
   }
@@ -502,6 +507,162 @@ async function checkForSyncJob(config) {
   } catch (err) {
     console.error("[EasyMarketing] Failed to upload groups:", err.message);
   }
+}
+
+// ── Auto-bump ────────────────────────────────────────────────────────────────
+// Called after post queue and sync jobs drain. Checks for published posts that
+// have auto_bump_enabled and are due for a bump comment. Opens the Facebook
+// post permalink, finds the comment box, types a short randomised string, and
+// submits it to push the post back up in the group feed.
+
+const BUMP_STRINGS = [
+  "Up", ".", "רלוונטי", "bump", "עדיין רלוונטי",
+  "מעדכן", "פעיל", "relevant", "still available",
+];
+
+async function checkForBumpJob(config) {
+  const { apiBaseUrl, extensionSecret } = config;
+
+  let bump;
+  try {
+    const res = await fetch(`${apiBaseUrl}/api/extension/pending-bumps`, {
+      headers: { "x-extension-secret": extensionSecret },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    bump = data.bump;
+  } catch {
+    return; // Best-effort — don't block on network errors
+  }
+
+  if (!bump) return;
+
+  console.log(`[EasyMarketing] Bump job found — post ${bump.postId}, target ${bump.targetId}`);
+
+  // Build the permalink: if we have a facebook_post_id, navigate directly.
+  // Otherwise fall back to the group page (less reliable for bumping).
+  const url = bump.facebookPostId
+    ? `https://www.facebook.com/${bump.facebookPostId}`
+    : bump.targetId
+    ? `https://www.facebook.com/groups/${bump.targetId}`
+    : null;
+
+  if (!url) {
+    console.warn("[EasyMarketing] No URL for bump — skipping.");
+    return;
+  }
+
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url, active: true });
+  } catch (err) {
+    console.error("[EasyMarketing] Failed to open bump tab:", err.message);
+    return;
+  }
+
+  try {
+    await waitForTabLoad(tab.id, 30_000);
+  } catch {
+    chrome.tabs.remove(tab.id).catch(() => {});
+    return;
+  }
+
+  // Let the Facebook SPA settle
+  await sleep(5000);
+
+  // Pick a random bump string
+  const bumpText = BUMP_STRINGS[Math.floor(Math.random() * BUMP_STRINGS.length)];
+
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: async (text) => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+        // ── Find the comment input box ────────────────────────────────
+        // Facebook uses different selectors depending on layout. We try
+        // multiple strategies to find the first available comment input.
+        const selectors = [
+          '[aria-label="Write a comment"]',
+          '[aria-label="Write a comment…"]',
+          '[aria-label="כתיבת תגובה"]',
+          '[aria-label="כתיבת תגובה…"]',
+          '[contenteditable="true"][role="textbox"]',
+          'div[data-testid="UFI2CommentInput/comment_input"]',
+        ];
+
+        let commentBox = null;
+        for (const sel of selectors) {
+          commentBox = document.querySelector(sel);
+          if (commentBox) break;
+        }
+
+        if (!commentBox) {
+          // Try clicking the "Write a comment" prompt to open the input
+          const prompts = document.querySelectorAll('[role="button"]');
+          for (const p of prompts) {
+            const t = (p.textContent ?? "").trim().toLowerCase();
+            if (
+              t.includes("write a comment") ||
+              t.includes("כתיבת תגובה") ||
+              t.includes("comment")
+            ) {
+              p.click();
+              await sleep(2000);
+              break;
+            }
+          }
+
+          // Retry finding the input after clicking
+          for (const sel of selectors) {
+            commentBox = document.querySelector(sel);
+            if (commentBox) break;
+          }
+        }
+
+        if (!commentBox) {
+          return { success: false, error: "Comment box not found" };
+        }
+
+        // ── Focus and type into the comment box ─────────────────────
+        commentBox.focus();
+        await sleep(500);
+
+        // Facebook uses Lexical/Draft.js — we must dispatch events properly
+        // so the React state picks up the text. We use execCommand for
+        // compatibility (similar to the posting flow).
+        document.execCommand("insertText", false, text);
+        await sleep(1000);
+
+        // ── Submit the comment ──────────────────────────────────────
+        // Press Enter to submit
+        const enterEvent = new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true,
+        });
+        commentBox.dispatchEvent(enterEvent);
+        await sleep(2000);
+
+        return { success: true };
+      },
+      args: [bumpText],
+    });
+
+    if (result?.success) {
+      console.log(`[EasyMarketing] Bump comment posted: "${bumpText}"`);
+    } else {
+      console.warn("[EasyMarketing] Bump failed:", result?.error ?? "unknown error");
+    }
+  } catch (err) {
+    console.error("[EasyMarketing] Bump execution error:", err.message);
+  }
+
+  chrome.tabs.remove(tab.id).catch(() => {});
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

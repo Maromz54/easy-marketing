@@ -3,7 +3,8 @@
     "allow": [
       "Bash(npm install:*)",
       "Bash(npm run:*)",
-      "Bash(find 'c:/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/supabase/migrations' -name *.sql -type f)"
+      "Bash(find 'c:/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/supabase/migrations' -name *.sql -type f)",
+      "Read(//c/Users/masga/OneDrive/**)"
     ]
   }
 }
