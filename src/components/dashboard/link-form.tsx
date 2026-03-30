@@ -25,20 +25,22 @@ import { Separator } from "@/components/ui/separator";
 const linkSchema = z.object({
   destination: z
     .string()
+    .trim()
     .min(1, { message: "כתובת היעד היא שדה חובה." })
     .refine(
       (v) => {
-        const url = v.startsWith("http") ? v : `https://${v}`;
+        const url = /^https?:\/\//i.test(v) ? v : `https://${v}`;
         try { new URL(url); return true; } catch { return false; }
       },
       { message: "אנא הזן כתובת URL תקינה." }
     ),
-  label: z.string().max(80, { message: "השם ארוך מדי (מקסימום 80 תווים)." }).optional(),
+  label: z.string().trim().max(80, { message: "השם ארוך מדי (מקסימום 80 תווים)." }).optional(),
   customSlug: z
     .string()
+    .trim()
     .optional()
     .refine(
-      (v) => !v || v === "" || /^[a-z0-9_-]{2,50}$/.test(v),
+      (v) => !v || /^[a-z0-9_-]{2,50}$/.test(v),
       { message: "הסיומת יכולה להכיל רק אותיות אנגלית קטנות, מספרים, מקף ו-underscore (2–50 תווים)." }
     ),
 });
@@ -162,7 +164,6 @@ export function LinkForm({ appUrl }: LinkFormProps) {
                   </FormLabel>
                   <FormControl>
                     <Input
-                      type="url"
                       placeholder="https://wa.me/972501234567"
                       dir="ltr"
                       className="text-start"
