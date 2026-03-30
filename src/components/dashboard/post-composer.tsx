@@ -1019,6 +1019,10 @@ export function PostComposer({
                                 dir="ltr"
                                 className="h-8 w-20 text-center text-sm rounded-lg"
                                 {...field}
+                                onChange={(e) => {
+                                  const n = e.target.valueAsNumber;
+                                  field.onChange(isNaN(n) ? undefined : n);
+                                }}
                               />
                             </FormControl>
                             <span className="text-xs text-slate-400">שעות</span>
