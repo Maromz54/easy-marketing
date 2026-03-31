@@ -51,9 +51,7 @@ export async function createLinkAction(
 
   // ── Determine slug ─────────────────────────────────────────────────────
   const isCustom = Boolean(input.customSlug?.trim());
-  let slug = isCustom
-    ? input.customSlug!.trim().toLowerCase()
-    : generateSlug();
+  let slug = (isCustom ? input.customSlug!.trim() : generateSlug()).toLowerCase();
 
   if (!SLUG_RE.test(slug)) {
     return {
@@ -74,7 +72,7 @@ export async function createLinkAction(
       return { error: `הסיומת "${slug}" כבר תפוסה. אנא בחר סיומת אחרת.` };
     }
     // Auto-generated collision (very rare with 64^6 space) — retry once
-    slug = generateSlug();
+    slug = generateSlug().toLowerCase();
     const { data: existingRetry } = await supabase
       .from("links")
       .select("id")
