@@ -183,11 +183,57 @@ window.easyMarketingPost = async function (content, imageUrls, linkUrl, imageDat
     }
   }
 
+  // ── Method 4: char-by-char KeyboardEvent + InputEvent dispatch ──────────
   if (!checkInjected()) {
-    err("All 3 text injection methods failed (execCommand / setData paste / File paste).");
+    log("File-based paste failed — trying char-by-char keyboard dispatch...");
+    try {
+      composer.focus();
+      await sleep(300);
+      // Clear any partial injection from earlier attempts
+      document.execCommand("selectAll", false);
+      await sleep(50);
+      document.execCommand("delete", false);
+      await sleep(200);
+
+      for (let i = 0; i < fullContent.length; i++) {
+        const char = fullContent[i];
+        const isNewline = char === "\n";
+        const key = isNewline ? "Enter" : char;
+        const code = isNewline ? "Enter" : "";
+        const keyCode = isNewline ? 13 : char.charCodeAt(0);
+
+        composer.dispatchEvent(new KeyboardEvent("keydown", {
+          key, code, keyCode, which: keyCode,
+          bubbles: true, cancelable: true, composed: true,
+        }));
+        composer.dispatchEvent(new InputEvent("beforeinput", {
+          inputType: isNewline ? "insertParagraph" : "insertText",
+          data: isNewline ? null : char,
+          bubbles: true, cancelable: true, composed: true,
+        }));
+        composer.dispatchEvent(new InputEvent("input", {
+          inputType: isNewline ? "insertParagraph" : "insertText",
+          data: isNewline ? null : char,
+          bubbles: true, cancelable: false, composed: true,
+        }));
+        composer.dispatchEvent(new KeyboardEvent("keyup", {
+          key, code, keyCode, which: keyCode,
+          bubbles: true, cancelable: true, composed: true,
+        }));
+        if (i % 10 === 9) await sleep(20); // yield every 10 chars
+      }
+      log("Char-by-char dispatch done — waiting 2 s...");
+      await sleep(2000);
+    } catch (e) {
+      warn("Char-by-char error:", e.message);
+    }
+  }
+
+  if (!checkInjected()) {
+    err("All 4 text injection methods failed (execCommand / setData paste / File paste / char-by-char).");
     return {
       success: false,
-      error: "Text injection failed — execCommand, setData paste, and File paste all failed. See [EasyMarketing] logs.",
+      error: "Text injection failed — all 4 methods failed. See [EasyMarketing] logs.",
     };
   }
   log("Text injection confirmed ✓");
@@ -421,6 +467,21 @@ window.easyMarketingPost = async function (content, imageUrls, linkUrl, imageDat
 
     log("STEP 3b complete — image injected ✓");
   }
+
+  // ── Pre-submit validation gate ─────────────────────────────────────────
+  // Verify the composer still contains the expected text BEFORE clicking Post.
+  // Guards against false "published" status when text silently vanishes.
+  const composerText = (composer.textContent ?? "").trim();
+  const prefix30 = content.trim().slice(0, 30);
+  if (prefix30 && !composerText.includes(prefix30)) {
+    err("Pre-submit check FAILED — expected prefix:", JSON.stringify(prefix30));
+    err("Actual composer:", JSON.stringify(composerText.slice(0, 100)));
+    return {
+      success: false,
+      error: "Pre-submit validation failed: text not in composer before clicking Post.",
+    };
+  }
+  log("Pre-submit validation passed ✓");
 
   // ── STEP 4 — Find and click "פרסום" ──────────────────────────────────────
 

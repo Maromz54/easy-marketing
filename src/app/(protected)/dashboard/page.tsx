@@ -49,7 +49,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const { data: postsData } = await supabase
     .from("posts")
     .select(
-      "id, content, status, scheduled_at, published_at, created_at, error_message, facebook_post_id, facebook_tokens(page_name)"
+      "id, content, status, scheduled_at, published_at, created_at, error_message, facebook_post_id, recurrence_rule, auto_bump_enabled, bump_interval_hours, last_bumped_at, facebook_tokens(page_name)"
     )
     .eq("user_id", user.id)
     .order("created_at", { ascending: false })

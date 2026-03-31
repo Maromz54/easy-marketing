@@ -118,6 +118,7 @@ type PostFormValues = z.infer<typeof postSchema>;
 
 // ── Sentinel ──────────────────────────────────────────────────────────────────
 const EXTENSION_SENTINEL = "__none__";
+const DRAFT_STORAGE_KEY = "easymarketing-draft";
 
 // ── Hebrew weekday labels ─────────────────────────────────────────────────────
 const WEEKDAYS = [
@@ -186,9 +187,38 @@ export function PostComposer({
     },
   });
 
+  // Restore draft from localStorage on mount (only for new posts)
+  useEffect(() => {
+    if (isEditing || templateToLoad || draftToResume) return;
+    try {
+      const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (!saved) return;
+      const p = JSON.parse(saved) as Partial<PostFormValues>;
+      if (p.content?.trim()) {
+        form.reset({
+          facebookTokenId: p.facebookTokenId ?? EXTENSION_SENTINEL,
+          distributionListIds: p.distributionListIds ?? [],
+          extraGroupIds: p.extraGroupIds ?? "",
+          targetId: p.targetId ?? "",
+          content: p.content ?? "",
+          imageUrls: p.imageUrls ?? [],
+          linkUrl: p.linkUrl ?? "",
+          publishMode: p.publishMode ?? "now",
+          scheduledAt: p.scheduledAt ?? "",
+          recurrenceType: p.recurrenceType ?? "none",
+          recurrenceDays: p.recurrenceDays ?? [],
+          autoBumpEnabled: p.autoBumpEnabled ?? false,
+          bumpIntervalHours: p.bumpIntervalHours ?? 24,
+        });
+      }
+    } catch { try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {} }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Prefill / clear form on edit mode changes
   useEffect(() => {
     if (editingPost) {
+      try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {}
       const localScheduledAt = editingPost.scheduled_at
         ? new Date(editingPost.scheduled_at)
             .toLocaleString("sv-SE")
@@ -261,6 +291,7 @@ export function PostComposer({
   // Load a template into the form when the Templates tab fires "Use Template"
   useEffect(() => {
     if (!templateToLoad) return;
+    try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {}
     form.reset({
       facebookTokenId: EXTENSION_SENTINEL,
       distributionListIds: [],
@@ -285,6 +316,7 @@ export function PostComposer({
   // Resume a saved draft into the form when PostsTable fires "Resume Edit"
   useEffect(() => {
     if (!draftToResume) return;
+    try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {}
     const dr = draftToResume as PostRow & {
       image_urls?: string[];
       image_url?: string | null;
@@ -315,6 +347,23 @@ export function PostComposer({
     onDraftResumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftToResume]);
+
+  // Auto-save draft to localStorage (debounced 2s, new posts only)
+  useEffect(() => {
+    if (isEditing) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const sub = form.watch((values) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        try {
+          if (values.content?.trim()) {
+            localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(values));
+          }
+        } catch {}
+      }, 2000);
+    });
+    return () => { clearTimeout(timer); sub.unsubscribe(); };
+  }, [form, isEditing]);
 
   // Watched values — coerce to non-nullable so downstream code never crashes on
   // undefined (form.watch can return undefined before the first render commit).
@@ -461,6 +510,7 @@ export function PostComposer({
         setServerError(result.error);
       } else {
         setIsSuccess(true);
+        try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {}
         setSuccessCount(result.count ?? null);
         form.reset({
           facebookTokenId: values.facebookTokenId ?? EXTENSION_SENTINEL,
@@ -986,13 +1036,13 @@ export function PostComposer({
                             aria-checked={field.value}
                             aria-label="הפעל Auto-Bump"
                             onClick={() => field.onChange(!field.value)}
-                            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 ${
+                            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 ${
                               field.value ? "bg-blue-600" : "bg-slate-200"
                             }`}
                           >
                             <span
                               className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm ring-0 transition-transform duration-200 ${
-                                field.value ? "-translate-x-5" : "translate-x-0"
+                                field.value ? "ltr:translate-x-5 rtl:-translate-x-5" : "translate-x-0"
                               }`}
                             />
                           </button>

@@ -519,3 +519,26 @@ export async function createPostAction(
   revalidatePath("/dashboard");
   return { success: true };
 }
+
+export async function toggleAutoBumpAction(
+  postId: string,
+  enabled: boolean
+): Promise<{ success?: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  const { data: existing } = await supabase
+    .from("posts").select("id, status")
+    .eq("id", postId).eq("user_id", user.id).maybeSingle();
+
+  if (!existing) return { error: "הפוסט לא נמצא." };
+  if (existing.status !== "published") return { error: "Auto-Bump זמין רק לפוסטים שפורסמו." };
+
+  const { error: dbError } = await supabase
+    .from("posts").update({ auto_bump_enabled: enabled }).eq("id", postId);
+
+  if (dbError) return { error: "שגיאה בעדכון." };
+  revalidatePath("/dashboard");
+  return { success: true };
+}

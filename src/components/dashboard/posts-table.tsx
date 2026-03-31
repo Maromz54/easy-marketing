@@ -2,13 +2,14 @@
 
 import { useState, useTransition } from "react";
 import {
-  FileText, AlertCircle, Pencil, Loader2, RefreshCw, X, Trash2,
+  FileText, AlertCircle, Pencil, Loader2, RefreshCw, X, Trash2, Bell,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   cancelScheduledPostAction,
   deletePostAction,
+  toggleAutoBumpAction,
 } from "@/actions/posts";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -22,6 +23,9 @@ export interface PostRow {
   error_message: string | null;
   facebook_post_id: string | null;
   recurrence_rule: string | null;
+  auto_bump_enabled: boolean;
+  bump_interval_hours: number | null;
+  last_bumped_at: string | null;
   // joined via foreign key
   facebook_tokens: { page_name: string | null } | null;
 }
@@ -256,6 +260,43 @@ function PostCard({
             <span className="font-mono text-slate-300 truncate max-w-[120px]" dir="ltr">
               {post.facebook_post_id}
             </span>
+          )}
+          {post.status === "published" && (
+            <span className="flex items-center gap-1.5">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={post.auto_bump_enabled}
+                aria-label="Auto-Bump"
+                onClick={() => startTransition(async () => {
+                  await toggleAutoBumpAction(post.id, !post.auto_bump_enabled);
+                })}
+                disabled={isPending}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 ${
+                  post.auto_bump_enabled ? "bg-blue-600" : "bg-slate-200"
+                } ${isPending ? "opacity-50" : ""}`}
+              >
+                <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm ring-0 transition-transform duration-200 ${
+                  post.auto_bump_enabled ? "ltr:translate-x-4 rtl:-translate-x-4" : "translate-x-0"
+                }`} />
+              </button>
+              <Bell className="h-3 w-3 text-slate-400" />
+              <span className="text-[11px] text-slate-400">Bump</span>
+            </span>
+          )}
+          {post.status === "published" && post.auto_bump_enabled && post.last_bumped_at && (
+            <Badge variant="secondary" className="rounded-lg text-[11px] font-normal">
+              באמפ אחרון:{" "}
+              {new Intl.DateTimeFormat("he-IL", {
+                day: "2-digit", month: "2-digit",
+                hour: "2-digit", minute: "2-digit",
+              }).format(new Date(post.last_bumped_at))}
+            </Badge>
+          )}
+          {post.status === "published" && post.auto_bump_enabled && post.bump_interval_hours && (
+            <Badge variant="secondary" className="rounded-lg text-[11px] font-normal">
+              כל {post.bump_interval_hours} שעות
+            </Badge>
           )}
         </div>
       </div>

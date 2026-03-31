@@ -184,8 +184,9 @@ async function checkAndPost(config) {
   }
 
   const scriptResult = execResult?.[0]?.result;
+  console.log("[EasyMarketing] scriptResult:", JSON.stringify(scriptResult));
 
-  if (scriptResult?.success) {
+  if (scriptResult && scriptResult.success === true) {
     console.log("[EasyMarketing] Post published successfully:", post.id);
     chrome.tabs.remove(tab.id).catch(() => {});
     await markPost(apiBaseUrl, extensionSecret, post.id, "published");
@@ -397,21 +398,28 @@ async function checkForSyncJob(config) {
         // ── Dynamic container detection ───────────────────────────────────
         // Facebook renders the groups list inside a custom inner scrollable
         // div. We walk up from a known group link to find the first ancestor
-        // whose CSS overflow-y is "auto" or "scroll" AND that is actually
-        // taller than its viewport (i.e. it has overflow content).
-        // Falls back to document.documentElement if none is found.
+        // whose CSS overflow-y is "auto", "scroll", or even "hidden" (when
+        // scrollHeight > clientHeight) AND that is actually taller than its
+        // viewport. Falls back to document.documentElement if none is found.
         function findScrollContainer() {
           const links = document.querySelectorAll('a[href*="/groups/"]');
           for (const link of links) {
             let el = link.parentElement;
             while (el && el !== document.body) {
-              const oy = window.getComputedStyle(el).overflowY;
-              if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight) {
+              const style = window.getComputedStyle(el);
+              const oy = style.overflowY;
+              const isScrollable =
+                oy === "auto" || oy === "scroll" ||
+                (oy === "hidden" && el.scrollHeight > el.clientHeight + 10);
+              if (isScrollable && el.scrollHeight > el.clientHeight) {
+                console.log(`[EasyMarketing] Container: <${el.tagName}> oy=${oy} ` +
+                  `scrollH=${el.scrollHeight} clientH=${el.clientHeight}`);
                 return el;
               }
               el = el.parentElement;
             }
           }
+          console.log("[EasyMarketing] No inner container — using documentElement");
           return document.documentElement;
         }
 
@@ -448,12 +456,12 @@ async function checkForSyncJob(config) {
           // Collect whatever rendered between stage 1 and stage 2.
           extractVisible();
 
-          // Stage 2: force-scroll the actual container another 1000 px.
+          // Stage 2: force-scroll the actual container another 2000 px.
           //   Even if no new links appeared yet, this guarantees the
           //   viewport moves past any "false floor" that FB rendered as
           //   a spacer while the real next batch is still loading.
           const container = findScrollContainer();
-          container.scrollTop += 1000;
+          container.scrollTop += 2000;
           await sleep(pulseWaitMs); // wait for stage-2 lazy-load
 
           const sizeBefore = accumulated.size;
@@ -462,6 +470,13 @@ async function checkForSyncJob(config) {
           console.log(
             `[EasyMarketing] Iter ${i + 1}/${maxIterations}: +${added} new (total: ${accumulated.size})`
           );
+
+          // Stage 3: document-level nudge if no new groups from stages 1+2
+          if (accumulated.size === lastSize) {
+            window.scrollTo(0, document.body.scrollHeight);
+            await sleep(pulseWaitMs);
+            extractVisible();
+          }
 
           if (accumulated.size === lastSize) {
             stableCount++;
@@ -482,9 +497,9 @@ async function checkForSyncJob(config) {
 
         return [...accumulated.values()];
       },
-      // maxIterations=200, pulseWaitMs=3 s (×2 per iter = 6 s total),
-      // stableThreshold=8 (~48 s of patience before giving up)
-      args: [200, 3000, 8],
+      // maxIterations=200, pulseWaitMs=3 s (×3 stages per iter = 9 s total),
+      // stableThreshold=12 (~108 s of patience before giving up)
+      args: [200, 3000, 12],
     });
     groups = result ?? [];
   } catch (err) {
@@ -653,13 +668,51 @@ async function checkForBumpJob(config) {
       args: [bumpText],
     });
 
-    if (result?.success) {
+    const bumpSuccess = result?.success === true;
+    const bumpError = result?.error ?? "unknown error";
+
+    if (bumpSuccess) {
       console.log(`[EasyMarketing] Bump comment posted: "${bumpText}"`);
     } else {
-      console.warn("[EasyMarketing] Bump failed:", result?.error ?? "unknown error");
+      console.warn("[EasyMarketing] Bump failed:", bumpError);
+    }
+
+    // Report bump result to server
+    try {
+      await fetch(`${apiBaseUrl}/api/extension/bump-result`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-extension-secret": extensionSecret,
+        },
+        body: JSON.stringify({
+          postId: bump.postId,
+          success: bumpSuccess,
+          error: bumpSuccess ? undefined : bumpError,
+        }),
+      });
+    } catch (reportErr) {
+      console.error("[EasyMarketing] Failed to report bump result:", reportErr.message);
     }
   } catch (err) {
     console.error("[EasyMarketing] Bump execution error:", err.message);
+    // Report failure to server
+    try {
+      await fetch(`${apiBaseUrl}/api/extension/bump-result`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-extension-secret": extensionSecret,
+        },
+        body: JSON.stringify({
+          postId: bump.postId,
+          success: false,
+          error: err.message,
+        }),
+      });
+    } catch (reportErr) {
+      console.error("[EasyMarketing] Failed to report bump result:", reportErr.message);
+    }
   }
 
   chrome.tabs.remove(tab.id).catch(() => {});
