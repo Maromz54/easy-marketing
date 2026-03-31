@@ -43,7 +43,7 @@ const linkSchema = z.object({
     .string()
     .trim()
     .refine(
-      (v) => v === "" || /^[a-z0-9_-]{2,50}$/.test(v),
+      (v) => v === "" || /^[a-z0-9_\-]{2,50}$/.test(v.toLowerCase()),
       { message: "הסיומת יכולה להכיל רק אותיות אנגלית קטנות, מספרים, מקף ו-underscore (2–50 תווים)." }
     ),
 });
@@ -75,7 +75,7 @@ export function LinkForm({ appUrl }: LinkFormProps) {
       const result = await createLinkAction({
         destination: values.destination,
         label: values.label || undefined,
-        customSlug: values.customSlug || undefined,
+        customSlug: values.customSlug?.toLowerCase() || undefined,
       });
 
       if (result.error) {

@@ -10,6 +10,7 @@ import {
   cancelScheduledPostAction,
   deletePostAction,
   toggleAutoBumpAction,
+  updateBumpIntervalAction,
 } from "@/actions/posts";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -17,6 +18,7 @@ export interface PostRow {
   id: string;
   content: string;
   status: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled";
+  target_id: string | null;
   scheduled_at: string | null;
   published_at: string | null;
   created_at: string;
@@ -34,6 +36,7 @@ interface PostsTableProps {
   posts: PostRow[];
   onEdit: (post: PostRow) => void;
   onResumeDraft?: (post: PostRow) => void;
+  groupNameMap?: Record<string, string>;
 }
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -67,7 +70,7 @@ const STATUS_CONFIG = {
 type FilterKey = "all" | "published" | "scheduled" | "draft";
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export function PostsTable({ posts, onEdit, onResumeDraft }: PostsTableProps) {
+export function PostsTable({ posts, onEdit, onResumeDraft, groupNameMap }: PostsTableProps) {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
 
   const counts: Record<FilterKey, number> = {
@@ -149,6 +152,7 @@ export function PostsTable({ posts, onEdit, onResumeDraft }: PostsTableProps) {
               post={post}
               onEdit={onEdit}
               onResumeDraft={onResumeDraft}
+              groupNameMap={groupNameMap}
             />
           ))}
         </div>
@@ -162,12 +166,16 @@ function PostCard({
   post,
   onEdit,
   onResumeDraft,
+  groupNameMap,
 }: {
   post: PostRow;
   onEdit: (post: PostRow) => void;
   onResumeDraft?: (post: PostRow) => void;
+  groupNameMap?: Record<string, string>;
 }) {
   const [isPending, startTransition] = useTransition();
+  const [editingInterval, setEditingInterval] = useState(false);
+  const [intervalValue, setIntervalValue] = useState(String(post.bump_interval_hours ?? 24));
   const config = STATUS_CONFIG[post.status] ?? STATUS_CONFIG.draft;
   const preview =
     post.content.length > 180 ? post.content.slice(0, 180) + "…" : post.content;
@@ -251,6 +259,11 @@ function PostCard({
               {post.facebook_tokens.page_name}
             </span>
           )}
+          {post.target_id && (
+            <span className="bg-blue-50 text-blue-600 rounded-lg px-2 py-0.5 truncate max-w-[200px]" title={post.target_id}>
+              {groupNameMap?.[post.target_id] ?? post.target_id}
+            </span>
+          )}
           {recurrenceLabel && (
             <span className="bg-violet-50 text-violet-600 rounded-lg px-2 py-0.5">
               🔁 {recurrenceLabel}
@@ -294,9 +307,46 @@ function PostCard({
             </Badge>
           )}
           {post.status === "published" && post.auto_bump_enabled && post.bump_interval_hours && (
-            <Badge variant="secondary" className="rounded-lg text-[11px] font-normal">
-              כל {post.bump_interval_hours} שעות
-            </Badge>
+            editingInterval ? (
+              <form
+                className="flex items-center gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const n = parseInt(intervalValue, 10);
+                  if (!n || n < 1 || n > 168) return;
+                  startTransition(async () => {
+                    await updateBumpIntervalAction(post.id, n);
+                    setEditingInterval(false);
+                  });
+                }}
+              >
+                <input
+                  type="number"
+                  min={1}
+                  max={168}
+                  value={intervalValue}
+                  onChange={(e) => setIntervalValue(e.target.value)}
+                  autoFocus
+                  onBlur={() => setEditingInterval(false)}
+                  onKeyDown={(e) => { if (e.key === "Escape") setEditingInterval(false); }}
+                  className="w-14 h-6 rounded border border-slate-300 text-center text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <span className="text-[11px] text-slate-400">שעות</span>
+              </form>
+            ) : (
+              <Badge
+                variant="secondary"
+                className="rounded-lg text-[11px] font-normal cursor-pointer hover:bg-slate-200 transition-colors"
+                onClick={() => {
+                  setIntervalValue(String(post.bump_interval_hours ?? 24));
+                  setEditingInterval(true);
+                }}
+                title="לחץ לעריכת מרווח"
+              >
+                כל {post.bump_interval_hours} שעות
+                <Pencil className="h-2.5 w-2.5 ms-1 inline opacity-50" />
+              </Badge>
+            )
           )}
         </div>
       </div>

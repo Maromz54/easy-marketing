@@ -238,6 +238,59 @@ window.easyMarketingPost = async function (content, imageUrls, linkUrl, imageDat
   }
   log("Text injection confirmed ✓");
 
+  // ── STEP 3a — Link preview hydration ────────────────────────────────────
+  // If the content contains a URL, press Space then wait for Facebook to
+  // detect the URL and render a link preview card. This only works when
+  // the URL is the last thing typed (which it is — linkUrl is appended
+  // at the end of fullContent).
+  if (linkUrl) {
+    log("STEP 3a — Triggering link preview hydration...");
+    try {
+      composer.focus();
+      // Move cursor to end
+      const sel = window.getSelection();
+      if (sel && composer.lastChild) {
+        sel.selectAllChildren(composer);
+        sel.collapseToEnd();
+      }
+      await sleep(300);
+
+      // Dispatch a Space keypress to trigger FB's URL detection
+      const spaceDown = new KeyboardEvent("keydown", {
+        key: " ", code: "Space", keyCode: 32, which: 32,
+        bubbles: true, cancelable: true, composed: true,
+      });
+      const spaceInput = new InputEvent("input", {
+        inputType: "insertText", data: " ",
+        bubbles: true, cancelable: false, composed: true,
+      });
+      const spaceUp = new KeyboardEvent("keyup", {
+        key: " ", code: "Space", keyCode: 32, which: 32,
+        bubbles: true, cancelable: true, composed: true,
+      });
+      composer.dispatchEvent(spaceDown);
+      document.execCommand("insertText", false, " ");
+      composer.dispatchEvent(spaceInput);
+      composer.dispatchEvent(spaceUp);
+
+      // Wait for Facebook to hydrate the link preview
+      log("Waiting 3 s for link preview to render...");
+      await sleep(3000);
+
+      // Check if a link preview appeared
+      const previewCard = composerDialog?.querySelector(
+        'a[role="link"], [data-testid*="link"], div[class*="preview"], div[class*="attachment"]'
+      );
+      if (previewCard) {
+        log("Link preview detected ✓");
+      } else {
+        warn("No link preview detected — link may appear as plain text.");
+      }
+    } catch (e) {
+      warn("Link preview hydration error:", e.message);
+    }
+  }
+
   // Normalise: accept both legacy single string and new arrays
   if (!Array.isArray(imageUrls))    imageUrls    = imageUrls    ? [imageUrls]    : [];
   if (!Array.isArray(imageDataUris)) imageDataUris = imageDataUris ? [imageDataUris] : [];

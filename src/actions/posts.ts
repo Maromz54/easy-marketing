@@ -542,3 +542,30 @@ export async function toggleAutoBumpAction(
   revalidatePath("/dashboard");
   return { success: true };
 }
+
+export async function updateBumpIntervalAction(
+  postId: string,
+  hours: number
+): Promise<{ success?: boolean; error?: string }> {
+  if (!Number.isInteger(hours) || hours < 1 || hours > 168) {
+    return { error: "המרווח חייב להיות מספר שלם בין 1 ל-168." };
+  }
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  const { data: existing } = await supabase
+    .from("posts").select("id, status")
+    .eq("id", postId).eq("user_id", user.id).maybeSingle();
+
+  if (!existing) return { error: "הפוסט לא נמצא." };
+  if (existing.status !== "published") return { error: "עדכון מרווח זמין רק לפוסטים שפורסמו." };
+
+  const { error: dbError } = await supabase
+    .from("posts").update({ bump_interval_hours: hours }).eq("id", postId);
+
+  if (dbError) return { error: "שגיאה בעדכון." };
+  revalidatePath("/dashboard");
+  return { success: true };
+}

@@ -187,35 +187,7 @@ export function PostComposer({
     },
   });
 
-  // Restore draft from localStorage on mount (only for new posts)
-  useEffect(() => {
-    if (isEditing || templateToLoad || draftToResume) return;
-    try {
-      const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
-      if (!saved) return;
-      const p = JSON.parse(saved) as Partial<PostFormValues>;
-      if (p.content?.trim()) {
-        form.reset({
-          facebookTokenId: p.facebookTokenId ?? EXTENSION_SENTINEL,
-          distributionListIds: p.distributionListIds ?? [],
-          extraGroupIds: p.extraGroupIds ?? "",
-          targetId: p.targetId ?? "",
-          content: p.content ?? "",
-          imageUrls: p.imageUrls ?? [],
-          linkUrl: p.linkUrl ?? "",
-          publishMode: p.publishMode ?? "now",
-          scheduledAt: p.scheduledAt ?? "",
-          recurrenceType: p.recurrenceType ?? "none",
-          recurrenceDays: p.recurrenceDays ?? [],
-          autoBumpEnabled: p.autoBumpEnabled ?? false,
-          bumpIntervalHours: p.bumpIntervalHours ?? 24,
-        });
-      }
-    } catch { try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {} }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Prefill / clear form on edit mode changes
+  // Prefill / clear form on edit mode changes (or restore draft on new-post mount)
   useEffect(() => {
     if (editingPost) {
       try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {}
@@ -268,21 +240,52 @@ export function PostComposer({
         bumpIntervalHours: (editingPost as any).bump_interval_hours ?? 24,
       });
     } else {
-      form.reset({
-        facebookTokenId: EXTENSION_SENTINEL,
-        distributionListIds: [],
-        extraGroupIds: "",
-        targetId: "",
-        content: "",
-        imageUrls: [],
-        linkUrl: "",
-        publishMode: "now",
-        scheduledAt: "",
-        recurrenceType: "none",
-        recurrenceDays: [],
-        autoBumpEnabled: false,
-        bumpIntervalHours: 24,
-      });
+      // Not editing — try to restore a saved draft from localStorage
+      let restored = false;
+      if (!templateToLoad && !draftToResume) {
+        try {
+          const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
+          if (saved) {
+            const p = JSON.parse(saved) as Partial<PostFormValues>;
+            if (p.content?.trim()) {
+              console.log("[EasyMarketing] Restoring draft from localStorage");
+              form.reset({
+                facebookTokenId: p.facebookTokenId ?? EXTENSION_SENTINEL,
+                distributionListIds: p.distributionListIds ?? [],
+                extraGroupIds: p.extraGroupIds ?? "",
+                targetId: p.targetId ?? "",
+                content: p.content ?? "",
+                imageUrls: p.imageUrls ?? [],
+                linkUrl: p.linkUrl ?? "",
+                publishMode: p.publishMode ?? "now",
+                scheduledAt: p.scheduledAt ?? "",
+                recurrenceType: p.recurrenceType ?? "none",
+                recurrenceDays: p.recurrenceDays ?? [],
+                autoBumpEnabled: p.autoBumpEnabled ?? false,
+                bumpIntervalHours: p.bumpIntervalHours ?? 24,
+              });
+              restored = true;
+            }
+          }
+        } catch { try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {} }
+      }
+      if (!restored) {
+        form.reset({
+          facebookTokenId: EXTENSION_SENTINEL,
+          distributionListIds: [],
+          extraGroupIds: "",
+          targetId: "",
+          content: "",
+          imageUrls: [],
+          linkUrl: "",
+          publishMode: "now",
+          scheduledAt: "",
+          recurrenceType: "none",
+          recurrenceDays: [],
+          autoBumpEnabled: false,
+          bumpIntervalHours: 24,
+        });
+      }
     }
     setUploadError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps

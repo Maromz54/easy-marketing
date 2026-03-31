@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Send, Link2, Puzzle, ListChecks, LayoutTemplate, RefreshCw, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -57,6 +57,13 @@ export function DashboardTabs({
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  // Build a group_id → name lookup for PostCard badges
+  const groupNameMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const g of facebookGroups) m[g.group_id] = g.name;
+    return m;
+  }, [facebookGroups]);
 
   function handleEdit(post: PostRow) {
     setEditingPost(post);
@@ -192,6 +199,7 @@ export function DashboardTabs({
           posts={posts}
           onEdit={handleEdit}
           onResumeDraft={handleResumeDraft}
+          groupNameMap={groupNameMap}
         />
       </TabsContent>
 
