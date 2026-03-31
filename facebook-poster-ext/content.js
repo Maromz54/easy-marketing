@@ -730,7 +730,51 @@ window.easyMarketingPost = async function (content, imageUrls, linkUrl, imageDat
     humanClick(postBtn);
   }
 
-  await sleep(5000);
+  // ── Submit Buffer — wait for Facebook to finish processing ───────────────
+  // Poll until the composer dialog/button disappears from the DOM (max 15 s).
+  // This prevents background.js from closing the tab while the XHR is in-flight.
+  log("Submit buffer: waiting for composer to close (max 15 s)...");
+  const submitDeadline = Date.now() + 15_000;
+  let composerGone = false;
+  while (Date.now() < submitDeadline) {
+    await sleep(500);
+
+    // The composer is gone when: the dialog is detached, or the post button
+    // is no longer in the DOM, or a "success" toast/confirmation is visible.
+    const dialogStillOpen =
+      composerDialog
+        ? document.contains(composerDialog)
+        : !!document.querySelector('[aria-label*="פרסום"], [aria-label*="post"], [role="dialog"]');
+
+    const btnStillPresent = postBtn ? document.contains(postBtn) : false;
+
+    const successToast = !!(
+      document.querySelector('[data-testid="toast_success"]') ||
+      document.querySelector('[class*="success"]') ||
+      document.querySelector('[aria-label*="פוסט נשלח"], [aria-label*="Post shared"]')
+    );
+
+    if (successToast) {
+      log("Success toast detected ✓");
+      composerGone = true;
+      break;
+    }
+
+    if (!dialogStillOpen || !btnStillPresent) {
+      log("Composer/button left the DOM — submission complete ✓");
+      composerGone = true;
+      break;
+    }
+
+    log(`Submit buffer: composer still open, waiting... (${Math.round((submitDeadline - Date.now()) / 1000)} s left)`);
+  }
+
+  if (!composerGone) {
+    warn("Submit buffer timed out (15 s) — composer may still be open. Proceeding anyway.");
+  }
+
+  // Extra safety margin: give any in-flight XHR requests 2 more seconds to land.
+  await sleep(2000);
   log("Done — post submitted ✓");
   return { success: true };
 };
