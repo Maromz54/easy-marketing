@@ -103,3 +103,23 @@ export async function createLinkAction(
   revalidatePath("/dashboard");
   return { success: true, slug };
 }
+
+export async function deleteLinkAction(
+  linkId: string
+): Promise<{ error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  const { data: existing } = await supabase
+    .from("links").select("id").eq("id", linkId).eq("user_id", user.id).maybeSingle();
+  if (!existing) return { error: "הקישור לא נמצא." };
+
+  // Delete related clicks first (FK constraint)
+  await supabase.from("link_clicks").delete().eq("link_id", linkId);
+  const { error } = await supabase.from("links").delete().eq("id", linkId);
+  if (error) return { error: "שגיאה במחיקת הקישור." };
+
+  revalidatePath("/dashboard");
+  return {};
+}

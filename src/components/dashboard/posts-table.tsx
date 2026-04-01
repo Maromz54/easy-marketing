@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import {
   FileText, AlertCircle, Pencil, Loader2, RefreshCw, X, Trash2, Bell,
+  ChevronDown, ChevronUp,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,7 @@ export interface PostRow {
   auto_bump_enabled: boolean;
   bump_interval_hours: number | null;
   last_bumped_at: string | null;
+  batch_id: string | null;
   // joined via foreign key
   facebook_tokens: { page_name: string | null } | null;
 }
@@ -70,15 +72,12 @@ const STATUS_CONFIG = {
 type FilterKey = "all" | "published" | "scheduled" | "draft";
 
 // ── Component ─────────────────────────────────────────────────────────────────
+type DisplayItem =
+  | { type: "single"; post: PostRow; sortDate: string }
+  | { type: "group"; batchId: string; posts: PostRow[]; sortDate: string };
+
 export function PostsTable({ posts, onEdit, onResumeDraft, groupNameMap }: PostsTableProps) {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
-
-  const counts: Record<FilterKey, number> = {
-    all: posts.length,
-    published: posts.filter((p) => p.status === "published").length,
-    scheduled: posts.filter((p) => p.status === "scheduled" || p.status === "processing").length,
-    draft: posts.filter((p) => p.status === "draft").length,
-  };
 
   const filtered = posts.filter((p) => {
     if (activeFilter === "published") return p.status === "published";
@@ -86,6 +85,45 @@ export function PostsTable({ posts, onEdit, onResumeDraft, groupNameMap }: Posts
     if (activeFilter === "draft") return p.status === "draft";
     return true;
   });
+
+  // Group fan-out posts by batch_id
+  const displayItems = useMemo<DisplayItem[]>(() => {
+    const batched = new Map<string, PostRow[]>();
+    const singles: PostRow[] = [];
+
+    for (const p of filtered) {
+      if (p.batch_id) {
+        const arr = batched.get(p.batch_id);
+        if (arr) arr.push(p); else batched.set(p.batch_id, [p]);
+      } else {
+        singles.push(p);
+      }
+    }
+
+    const items: DisplayItem[] = [];
+    for (const post of singles) {
+      items.push({ type: "single", post, sortDate: post.created_at });
+    }
+    for (const [batchId, batchPosts] of batched) {
+      // Use earliest created_at as the group's sort date
+      const earliest = batchPosts.reduce((min, p) => p.created_at < min ? p.created_at : min, batchPosts[0].created_at);
+      items.push({ type: "group", batchId, posts: batchPosts, sortDate: earliest });
+    }
+
+    items.sort((a, b) => b.sortDate.localeCompare(a.sortDate));
+    return items;
+  }, [filtered]);
+
+  // Count unique display items for "all" pill, individual posts for status pills
+  const counts: Record<FilterKey, number> = {
+    all: (() => {
+      const batchIds = new Set(posts.filter((p) => p.batch_id).map((p) => p.batch_id!));
+      return posts.filter((p) => !p.batch_id).length + batchIds.size;
+    })(),
+    published: posts.filter((p) => p.status === "published").length,
+    scheduled: posts.filter((p) => p.status === "scheduled" || p.status === "processing").length,
+    draft: posts.filter((p) => p.status === "draft").length,
+  };
 
   const FILTERS: { id: FilterKey; label: string }[] = [
     { id: "all", label: "הכל" },
@@ -132,7 +170,7 @@ export function PostsTable({ posts, onEdit, onResumeDraft, groupNameMap }: Posts
       </div>
 
       {/* Posts list */}
-      {filtered.length === 0 ? (
+      {displayItems.length === 0 ? (
         <div className="bg-white rounded-2xl border border-dashed border-slate-300/60 py-14 flex flex-col items-center justify-center text-center gap-3">
           <div className="h-14 w-14 rounded-2xl bg-slate-100 flex items-center justify-center">
             <FileText className="h-7 w-7 text-slate-400" />
@@ -146,18 +184,174 @@ export function PostsTable({ posts, onEdit, onResumeDraft, groupNameMap }: Posts
         </div>
       ) : (
         <div className="space-y-3">
-          {filtered.map((post) => (
-            <PostCard
-              key={post.id}
-              post={post}
-              onEdit={onEdit}
-              onResumeDraft={onResumeDraft}
-              groupNameMap={groupNameMap}
-            />
-          ))}
+          {displayItems.map((item) =>
+            item.type === "single" ? (
+              <PostCard
+                key={item.post.id}
+                post={item.post}
+                onEdit={onEdit}
+                onResumeDraft={onResumeDraft}
+                groupNameMap={groupNameMap}
+              />
+            ) : (
+              <GroupedPostCard
+                key={item.batchId}
+                posts={item.posts}
+                groupNameMap={groupNameMap}
+                onEdit={onEdit}
+              />
+            )
+          )}
         </div>
       )}
     </section>
+  );
+}
+
+// ── Grouped card (fan-out batch) ───────────────────────────────────────────────
+function GroupedPostCard({
+  posts,
+  groupNameMap,
+  onEdit,
+}: {
+  posts: PostRow[];
+  groupNameMap?: Record<string, string>;
+  onEdit: (post: PostRow) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Use the first post for the content preview
+  const representative = posts[0];
+  const preview =
+    representative.content.length > 180
+      ? representative.content.slice(0, 180) + "…"
+      : representative.content;
+
+  // Aggregate statuses
+  const statusCounts: Partial<Record<string, number>> = {};
+  for (const p of posts) {
+    statusCounts[p.status] = (statusCounts[p.status] ?? 0) + 1;
+  }
+
+  // Dominant status for the card badge
+  const dominantStatus = Object.entries(statusCounts).sort(
+    (a, b) => (b[1] ?? 0) - (a[1] ?? 0)
+  )[0]?.[0] as keyof typeof STATUS_CONFIG | undefined;
+  const dominantConfig = (dominantStatus && STATUS_CONFIG[dominantStatus]) ?? STATUS_CONFIG.draft;
+
+  // Date from earliest post
+  const earliest = posts.reduce(
+    (min, p) => (p.created_at < min ? p.created_at : min),
+    posts[0].created_at
+  );
+  const formattedDate = new Intl.DateTimeFormat("he-IL", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(earliest));
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/60 shadow-[0_1px_3px_rgb(0,0,0,0.04)] hover:shadow-[0_4px_16px_rgb(0,0,0,0.06)] transition-shadow duration-200">
+      <div className="p-5">
+        {/* Header: badge + date */}
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className={dominantConfig.className}>
+              {dominantConfig.label}
+            </Badge>
+            <span className="text-xs text-slate-400 bg-slate-50 rounded-lg px-2 py-0.5">
+              {posts.length} קבוצות
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-slate-400">
+            <span>נוצר</span>
+            <span dir="ltr">{formattedDate}</span>
+          </div>
+        </div>
+
+        {/* Content preview */}
+        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap mb-3">
+          {preview}
+        </p>
+
+        {/* Status summary */}
+        <div className="flex flex-wrap gap-2 mb-3">
+          {(["published", "scheduled", "processing", "failed", "draft", "cancelled"] as const).map(
+            (s) =>
+              statusCounts[s] ? (
+                <span
+                  key={s}
+                  className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-medium ${
+                    (STATUS_CONFIG[s] ?? STATUS_CONFIG.draft).className
+                  }`}
+                >
+                  {statusCounts[s]} {(STATUS_CONFIG[s] ?? STATUS_CONFIG.draft).label}
+                </span>
+              ) : null
+          )}
+        </div>
+
+        {/* Expand toggle */}
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 transition-colors"
+        >
+          {expanded ? (
+            <ChevronUp className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" />
+          )}
+          {expanded ? "הסתר קבוצות" : `הצג ${posts.length} קבוצות`}
+        </button>
+
+        {/* Expanded group list */}
+        {expanded && (
+          <div className="mt-3 border-t border-slate-100 pt-3 max-h-64 overflow-y-auto space-y-1">
+            {posts.map((p) => {
+              const cfg = STATUS_CONFIG[p.status] ?? STATUS_CONFIG.draft;
+              const name = p.target_id
+                ? groupNameMap?.[p.target_id] ?? p.target_id
+                : "—";
+              return (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 text-xs"
+                >
+                  <Badge
+                    variant="outline"
+                    className={`shrink-0 text-[10px] px-1.5 py-0 ${cfg.className}`}
+                  >
+                    {cfg.label}
+                  </Badge>
+                  <span className="truncate text-slate-700 flex-1" title={name}>
+                    {name}
+                  </span>
+                  {p.error_message && (
+                    <span
+                      className="truncate text-red-500 max-w-[200px]"
+                      title={p.error_message}
+                    >
+                      {p.error_message}
+                    </span>
+                  )}
+                  {p.status === "scheduled" && (
+                    <button
+                      onClick={() => onEdit(p)}
+                      className="shrink-0 text-slate-400 hover:text-slate-600"
+                      aria-label="ערוך"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

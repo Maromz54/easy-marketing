@@ -80,6 +80,11 @@ export function DashboardTabs({
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function handleEditList(id: string) {
+    setEditingListId(id);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function handleResumeDraft(post: PostRow) {
     setDraftToResume(post);
     setActiveTab("posts");
@@ -264,7 +269,7 @@ export function DashboardTabs({
 
         <DistributionListsTable
           lists={distributionLists}
-          onEdit={(id) => setEditingListId(id)}
+          onEdit={handleEditList}
         />
       </TabsContent>
 

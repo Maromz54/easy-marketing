@@ -49,11 +49,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const { data: postsData } = await supabase
     .from("posts")
     .select(
-      "id, content, status, target_id, scheduled_at, published_at, created_at, error_message, facebook_post_id, recurrence_rule, auto_bump_enabled, bump_interval_hours, last_bumped_at, facebook_tokens(page_name)"
+      "id, content, status, target_id, scheduled_at, published_at, created_at, error_message, facebook_post_id, recurrence_rule, auto_bump_enabled, bump_interval_hours, last_bumped_at, batch_id, facebook_tokens(page_name)"
     )
     .eq("user_id", user.id)
+    .eq("is_template", false)
     .order("created_at", { ascending: false })
-    .limit(50);
+    .limit(500);
   const posts = (postsData ?? []) as PostRow[];
 
   const { data: linksData } = await supabase

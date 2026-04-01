@@ -1,10 +1,14 @@
-import { ExternalLink, Link2, MousePointerClick } from "lucide-react";
+"use client";
+
+import { useTransition } from "react";
+import { ExternalLink, Link2, MousePointerClick, Trash2, Loader2 } from "lucide-react";
 import {
   Table, TableBody, TableCell, TableHead,
   TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { deleteLinkAction } from "@/actions/links";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface LinkWithCount {
@@ -69,6 +73,7 @@ export function LinksTable({ links, appUrl }: LinksTableProps) {
                   <TableHead>כתובת יעד</TableHead>
                   <TableHead className="text-center">קליקים</TableHead>
                   <TableHead>נוצר בתאריך</TableHead>
+                  <TableHead className="w-10" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -92,6 +97,7 @@ function LinkTableRow({
   link: LinkWithCount;
   appUrl: string;
 }) {
+  const [isPending, startTransition] = useTransition();
   const shortUrl = `${appUrl}/r/${link.slug}`;
 
   const createdDate = new Intl.DateTimeFormat("he-IL", {
@@ -106,8 +112,15 @@ function LinkTableRow({
       ? link.destination.slice(0, 45) + "…"
       : link.destination;
 
+  function handleDelete() {
+    if (!window.confirm("האם למחוק קישור זה? פעולה זו אינה הפיכה.")) return;
+    startTransition(async () => {
+      await deleteLinkAction(link.id);
+    });
+  }
+
   return (
-    <TableRow>
+    <TableRow className={isPending ? "opacity-50" : ""}>
       {/* Label + short URL */}
       <TableCell className="align-top">
         {link.label && (
@@ -152,6 +165,22 @@ function LinkTableRow({
       {/* Created date */}
       <TableCell className="text-sm text-muted-foreground whitespace-nowrap" dir="ltr">
         {createdDate}
+      </TableCell>
+
+      {/* Delete */}
+      <TableCell>
+        <button
+          onClick={handleDelete}
+          disabled={isPending}
+          aria-label="מחק קישור"
+          className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1"
+        >
+          {isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Trash2 className="h-4 w-4" />
+          )}
+        </button>
       </TableCell>
     </TableRow>
   );

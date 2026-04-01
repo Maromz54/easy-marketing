@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { randomUUID } from "crypto";
 import { createClient } from "@/lib/supabase/server";
 import { publishToPage } from "@/lib/facebook";
 import { resolveSpintax } from "@/utils/spintax";
@@ -346,6 +347,7 @@ export async function createPostAction(
     // Insert one row per group ID with cumulative anti-ban delay.
     // We use individual inserts (not a batch) so each row gets its own
     // error log — a batch insert can silently drop rows on constraint conflicts.
+    const batchId = randomUUID();
     let insertedCount = 0;
     let cumulativeDelaySec = 0;
 
@@ -367,6 +369,7 @@ export async function createPostAction(
         recurrence_rule: recurrenceRule,
         auto_bump_enabled: autoBumpEnabled,
         bump_interval_hours: bumpIntervalHours,
+        batch_id: batchId,
         status: "scheduled" as const,
         scheduled_at: scheduledAt,
       });

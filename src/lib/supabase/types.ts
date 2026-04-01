@@ -96,6 +96,7 @@ export type Database = {
           auto_bump_enabled: boolean;
           bump_interval_hours: number | null;
           last_bumped_at: string | null;
+          batch_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -117,6 +118,7 @@ export type Database = {
           auto_bump_enabled?: boolean;
           bump_interval_hours?: number | null;
           last_bumped_at?: string | null;
+          batch_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -138,6 +140,7 @@ export type Database = {
           auto_bump_enabled?: boolean;
           bump_interval_hours?: number | null;
           last_bumped_at?: string | null;
+          batch_id?: string | null;
           created_at?: string;
         };
         Relationships: [
