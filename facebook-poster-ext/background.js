@@ -146,7 +146,8 @@ async function checkAndPost(config) {
   let imageDataUris = [];
   if (imageUrls.length > 0) {
     console.log(`[EasyMarketing] Pre-fetching ${imageUrls.length} image(s) in parallel (CSP bypass)...`);
-    imageDataUris = await Promise.all(imageUrls.map(fetchImageAsDataUri));
+    const imageResults = await Promise.allSettled(imageUrls.map(fetchImageAsDataUri));
+    imageDataUris = imageResults.map(r => r.status === "fulfilled" ? r.value : null);
     const successCount = imageDataUris.filter(Boolean).length;
     console.log(`[EasyMarketing] Images pre-fetched: ${successCount}/${imageUrls.length} succeeded.`);
     imageDataUris = imageDataUris.filter(Boolean);
@@ -726,13 +727,19 @@ function sleep(ms) {
 
 function waitForTabLoad(tabId, timeoutMs) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       chrome.tabs.onUpdated.removeListener(listener);
       reject(new Error(`Tab ${tabId} did not finish loading within ${timeoutMs / 1000}s`));
     }, timeoutMs);
 
     function listener(id, info) {
+      if (settled) return;
       if (id === tabId && info.status === "complete") {
+        settled = true;
         clearTimeout(timer);
         chrome.tabs.onUpdated.removeListener(listener);
         resolve();
@@ -740,25 +747,52 @@ function waitForTabLoad(tabId, timeoutMs) {
     }
 
     chrome.tabs.onUpdated.addListener(listener);
+
+    // Check if tab is already loaded (race: load completed before listener attached)
+    chrome.tabs.get(tabId, (tab) => {
+      if (settled) return;
+      if (tab && tab.status === "complete") {
+        settled = true;
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    });
   });
 }
 
 // Fetch a URL and return a base64 data URI string (e.g. "data:image/jpeg;base64,...")
 // Runs in the service worker — no page CSP applies here.
 async function fetchImageAsDataUri(url) {
+  const MAX_SIZE = 10 * 1024 * 1024; // 10 MB limit
+  const TIMEOUT_MS = 30000; // 30s timeout
   try {
-    const response = await fetch(url);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
     if (!response.ok) {
       console.error("[EasyMarketing] fetchImageAsDataUri: HTTP", response.status, url);
       return null;
     }
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && parseInt(contentLength, 10) > MAX_SIZE) {
+      console.error("[EasyMarketing] fetchImageAsDataUri: Image too large", contentLength, url);
+      return null;
+    }
     const blob = await response.blob();
+    if (blob.size > MAX_SIZE) {
+      console.error("[EasyMarketing] fetchImageAsDataUri: Blob too large", blob.size, url);
+      return null;
+    }
     const mimeType = blob.type || "image/jpeg";
     const arrayBuffer = await blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
+    // Build base64 in chunks to avoid stack overflow on large images
+    const CHUNK = 8192;
     let binary = "";
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    for (let i = 0; i < bytes.byteLength; i += CHUNK) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
     }
     return `data:${mimeType};base64,${btoa(binary)}`;
   } catch (e) {

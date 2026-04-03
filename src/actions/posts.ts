@@ -432,7 +432,7 @@ export async function createPostAction(
     .select("id, page_id, access_token")
     .eq("id", input.facebookTokenId!)
     .eq("user_id", user.id)
-    .single();
+    .maybeSingle();
 
   if (!tokenData) {
     return { error: "דף הפייסבוק לא נמצא או שאין לך הרשאה אליו." };

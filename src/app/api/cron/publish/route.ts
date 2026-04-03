@@ -22,6 +22,7 @@ interface DuePost {
   id: string;
   content: string;
   image_url: string | null;
+  image_urls: string[];
   link_url: string | null;
   /** Explicit publish target (Group ID or alternate Page ID). Falls back to page_id. */
   target_id: string | null;
@@ -59,7 +60,7 @@ export async function GET(request: Request) {
     .eq("status", "scheduled")
     .lte("scheduled_at", now)
     .select(
-      "id, content, image_url, link_url, target_id, facebook_token_id, facebook_tokens(page_id, access_token)"
+      "id, content, image_url, image_urls, link_url, target_id, facebook_token_id, facebook_tokens(page_id, access_token)"
     )
     .returns<DuePost[]>();
 
@@ -114,7 +115,7 @@ async function publishPost(
     const facebookPostId = await publishToPage(targetId, access_token, {
       message: post.content,
       link: post.link_url ?? undefined,
-      picture: post.image_url ?? undefined,
+      picture: (post.image_urls?.length ? post.image_urls[0] : post.image_url) ?? undefined,
     });
 
     await supabase

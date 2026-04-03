@@ -116,7 +116,11 @@ export async function deleteLinkAction(
   if (!existing) return { error: "הקישור לא נמצא." };
 
   // Delete related clicks first (FK constraint)
-  await supabase.from("link_clicks").delete().eq("link_id", linkId);
+  const { error: clicksError } = await supabase.from("link_clicks").delete().eq("link_id", linkId);
+  if (clicksError) {
+    console.error("[deleteLinkAction] Failed to delete clicks:", clicksError);
+    return { error: "שגיאה במחיקת נתוני הקליקים." };
+  }
   const { error } = await supabase.from("links").delete().eq("id", linkId);
   if (error) return { error: "שגיאה במחיקת הקישור." };
 

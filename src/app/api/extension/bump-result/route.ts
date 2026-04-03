@@ -23,8 +23,13 @@ export async function POST(request: NextRequest) {
 
   // Failure — roll back last_bumped_at so the post is retried next cycle
   const supabase = createServiceClient();
-  await supabase.from("posts")
+  const { error: rollbackError } = await supabase.from("posts")
     .update({ last_bumped_at: null }).eq("id", body.postId);
+
+  if (rollbackError) {
+    console.error("[bump-result] Failed to rollback last_bumped_at:", rollbackError);
+    return NextResponse.json({ error: "Rollback failed" }, { status: 500 });
+  }
 
   return NextResponse.json({ ok: true });
 }
