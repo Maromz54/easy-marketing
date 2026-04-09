@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import {
   FileText, AlertCircle, Pencil, Loader2, RefreshCw, X, Trash2, Bell,
-  ChevronDown, ChevronUp,
+  ChevronDown, ChevronUp, Clock,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -208,6 +208,120 @@ export function PostsTable({ posts, onEdit, onResumeDraft, groupNameMap }: Posts
   );
 }
 
+// ── Reusable bump control ─────────────────────────────────────────────────────
+function BumpControl({ post }: { post: PostRow }) {
+  const [isPending, startTransition] = useTransition();
+  const [editingInterval, setEditingInterval] = useState(false);
+  const [intervalValue, setIntervalValue] = useState(String(post.bump_interval_hours ?? 24));
+
+  if (post.status !== "published") return null;
+
+  return (
+    <span className="flex items-center gap-1.5 flex-wrap">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={post.auto_bump_enabled}
+        aria-label="Auto-Bump"
+        onClick={() => startTransition(async () => {
+          await toggleAutoBumpAction(post.id, !post.auto_bump_enabled);
+        })}
+        disabled={isPending}
+        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 ${
+          post.auto_bump_enabled ? "bg-blue-600" : "bg-slate-200"
+        } ${isPending ? "opacity-50" : ""}`}
+      >
+        <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm ring-0 transition-transform duration-200 ${
+          post.auto_bump_enabled ? "ltr:translate-x-4 rtl:-translate-x-4" : "translate-x-0"
+        }`} />
+      </button>
+      <Bell className="h-3 w-3 text-slate-400" />
+      <span className="text-[11px] text-slate-400">Bump</span>
+      {post.auto_bump_enabled && post.bump_interval_hours && (
+        editingInterval ? (
+          <form
+            className="flex items-center gap-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const n = parseInt(intervalValue, 10);
+              if (!n || n < 1 || n > 168) return;
+              startTransition(async () => {
+                await updateBumpIntervalAction(post.id, n);
+                setEditingInterval(false);
+              });
+            }}
+          >
+            <input
+              type="number"
+              min={1}
+              max={168}
+              value={intervalValue}
+              onChange={(e) => setIntervalValue(e.target.value)}
+              autoFocus
+              onBlur={() => setEditingInterval(false)}
+              onKeyDown={(e) => { if (e.key === "Escape") setEditingInterval(false); }}
+              className="w-14 h-6 rounded border border-slate-300 text-center text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <span className="text-[11px] text-slate-400">שעות</span>
+          </form>
+        ) : (
+          <Badge
+            variant="secondary"
+            className="rounded-lg text-[11px] font-normal cursor-pointer hover:bg-slate-200 transition-colors"
+            onClick={() => {
+              setIntervalValue(String(post.bump_interval_hours ?? 24));
+              setEditingInterval(true);
+            }}
+            title="לחץ לעריכת מרווח"
+          >
+            כל {post.bump_interval_hours} שעות
+            <Pencil className="h-2.5 w-2.5 ms-1 inline opacity-50" />
+          </Badge>
+        )
+      )}
+    </span>
+  );
+}
+
+// ── Cancel button for a single row ────────────────────────────────────────────
+function CancelRowButton({ postId }: { postId: string }) {
+  const [isPending, startTransition] = useTransition();
+  return (
+    <button
+      disabled={isPending}
+      aria-label="בטל תזמון"
+      title="בטל תזמון"
+      onClick={() => startTransition(async () => { await cancelScheduledPostAction(postId); })}
+      className={`shrink-0 flex items-center gap-0.5 text-slate-400 hover:text-amber-600 transition-colors ${isPending ? "opacity-50 pointer-events-none" : ""}`}
+    >
+      {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+    </button>
+  );
+}
+
+// ── Cancel-all button for entire batch ────────────────────────────────────────
+function CancelAllButton({ scheduledIds }: { scheduledIds: string[] }) {
+  const [isPending, startTransition] = useTransition();
+
+  function handleCancelAll() {
+    if (!window.confirm(`לבטל את התזמון של ${scheduledIds.length} קבוצות?`)) return;
+    startTransition(async () => {
+      await Promise.all(scheduledIds.map((id) => cancelScheduledPostAction(id)));
+    });
+  }
+
+  return (
+    <button
+      disabled={isPending}
+      onClick={handleCancelAll}
+      className={`flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 ${isPending ? "opacity-50 pointer-events-none" : ""}`}
+    >
+      {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-3.5 w-3.5" />}
+      בטל תזמון לכל הקבוצות ({scheduledIds.length})
+    </button>
+  );
+}
+
 // ── Grouped card (fan-out batch) ───────────────────────────────────────────────
 function GroupedPostCard({
   posts,
@@ -219,6 +333,8 @@ function GroupedPostCard({
   onEdit: (post: PostRow) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+
+  const scheduledIds = posts.filter((p) => p.status === "scheduled").map((p) => p.id);
 
   // Use the first post for the content preview
   const representative = posts[0];
@@ -308,42 +424,67 @@ function GroupedPostCard({
 
         {/* Expanded group list */}
         {expanded && (
-          <div className="mt-3 border-t border-slate-100 pt-3 max-h-64 overflow-y-auto space-y-1">
+          <div className="mt-3 border-t border-slate-100 pt-3 max-h-80 overflow-y-auto space-y-1">
             {posts.map((p) => {
               const cfg = STATUS_CONFIG[p.status] ?? STATUS_CONFIG.draft;
               const name = p.target_id
                 ? groupNameMap?.[p.target_id] ?? p.target_id
                 : "—";
+              const scheduledTime = p.scheduled_at
+                ? new Intl.DateTimeFormat("he-IL", {
+                    day: "2-digit",
+                    month: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }).format(new Date(p.scheduled_at))
+                : null;
               return (
                 <div
                   key={p.id}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 text-xs"
+                  className="flex flex-col gap-1 px-2 py-2 rounded-lg hover:bg-slate-50 text-xs"
                 >
-                  <Badge
-                    variant="outline"
-                    className={`shrink-0 text-[10px] px-1.5 py-0 ${cfg.className}`}
-                  >
-                    {cfg.label}
-                  </Badge>
-                  <span className="truncate text-slate-700 flex-1" title={name}>
-                    {name}
-                  </span>
-                  {p.error_message && (
-                    <span
-                      className="truncate text-red-500 max-w-[200px]"
-                      title={p.error_message}
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className={`shrink-0 text-[10px] px-1.5 py-0 ${cfg.className}`}
                     >
-                      {p.error_message}
+                      {cfg.label}
+                    </Badge>
+                    <span className="truncate text-slate-700 flex-1" title={name}>
+                      {name}
                     </span>
-                  )}
-                  {p.status === "scheduled" && (
-                    <button
-                      onClick={() => onEdit(p)}
-                      className="shrink-0 text-slate-400 hover:text-slate-600"
-                      aria-label="ערוך"
-                    >
-                      <Pencil className="h-3 w-3" />
-                    </button>
+                    {scheduledTime && (
+                      <span className="shrink-0 flex items-center gap-1 text-[10px] text-slate-400 bg-slate-100 rounded-md px-1.5 py-0.5" dir="ltr">
+                        <Clock className="h-2.5 w-2.5" />
+                        {scheduledTime}
+                      </span>
+                    )}
+                    {p.error_message && (
+                      <span
+                        className="truncate text-red-500 max-w-[200px]"
+                        title={p.error_message}
+                      >
+                        {p.error_message}
+                      </span>
+                    )}
+                    {p.status === "scheduled" && (
+                      <>
+                        <button
+                          onClick={() => onEdit(p)}
+                          className="shrink-0 text-slate-400 hover:text-slate-600 transition-colors"
+                          aria-label="ערוך"
+                          title="ערוך פוסט"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                        <CancelRowButton postId={p.id} />
+                      </>
+                    )}
+                  </div>
+                  {p.status === "published" && (
+                    <div className="ps-1">
+                      <BumpControl post={p} />
+                    </div>
                   )}
                 </div>
               );
@@ -351,6 +492,13 @@ function GroupedPostCard({
           </div>
         )}
       </div>
+
+      {/* ── Batch actions footer ── */}
+      {scheduledIds.length > 0 && (
+        <div className="px-5 py-3 bg-slate-50/50 border-t border-slate-100 flex items-center gap-2">
+          <CancelAllButton scheduledIds={scheduledIds} />
+        </div>
+      )}
     </div>
   );
 }
@@ -368,8 +516,6 @@ function PostCard({
   groupNameMap?: Record<string, string>;
 }) {
   const [isPending, startTransition] = useTransition();
-  const [editingInterval, setEditingInterval] = useState(false);
-  const [intervalValue, setIntervalValue] = useState(String(post.bump_interval_hours ?? 24));
   const config = STATUS_CONFIG[post.status] ?? STATUS_CONFIG.draft;
   const preview =
     post.content.length > 180 ? post.content.slice(0, 180) + "…" : post.content;
@@ -468,29 +614,7 @@ function PostCard({
               {post.facebook_post_id}
             </span>
           )}
-          {post.status === "published" && (
-            <span className="flex items-center gap-1.5">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={post.auto_bump_enabled}
-                aria-label="Auto-Bump"
-                onClick={() => startTransition(async () => {
-                  await toggleAutoBumpAction(post.id, !post.auto_bump_enabled);
-                })}
-                disabled={isPending}
-                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 ${
-                  post.auto_bump_enabled ? "bg-blue-600" : "bg-slate-200"
-                } ${isPending ? "opacity-50" : ""}`}
-              >
-                <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm ring-0 transition-transform duration-200 ${
-                  post.auto_bump_enabled ? "ltr:translate-x-4 rtl:-translate-x-4" : "translate-x-0"
-                }`} />
-              </button>
-              <Bell className="h-3 w-3 text-slate-400" />
-              <span className="text-[11px] text-slate-400">Bump</span>
-            </span>
-          )}
+          {post.status === "published" && <BumpControl post={post} />}
           {post.status === "published" && post.auto_bump_enabled && post.last_bumped_at && (
             <Badge variant="secondary" className="rounded-lg text-[11px] font-normal">
               באמפ אחרון:{" "}
@@ -499,48 +623,6 @@ function PostCard({
                 hour: "2-digit", minute: "2-digit",
               }).format(new Date(post.last_bumped_at))}
             </Badge>
-          )}
-          {post.status === "published" && post.auto_bump_enabled && post.bump_interval_hours && (
-            editingInterval ? (
-              <form
-                className="flex items-center gap-1"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const n = parseInt(intervalValue, 10);
-                  if (!n || n < 1 || n > 168) return;
-                  startTransition(async () => {
-                    await updateBumpIntervalAction(post.id, n);
-                    setEditingInterval(false);
-                  });
-                }}
-              >
-                <input
-                  type="number"
-                  min={1}
-                  max={168}
-                  value={intervalValue}
-                  onChange={(e) => setIntervalValue(e.target.value)}
-                  autoFocus
-                  onBlur={() => setEditingInterval(false)}
-                  onKeyDown={(e) => { if (e.key === "Escape") setEditingInterval(false); }}
-                  className="w-14 h-6 rounded border border-slate-300 text-center text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <span className="text-[11px] text-slate-400">שעות</span>
-              </form>
-            ) : (
-              <Badge
-                variant="secondary"
-                className="rounded-lg text-[11px] font-normal cursor-pointer hover:bg-slate-200 transition-colors"
-                onClick={() => {
-                  setIntervalValue(String(post.bump_interval_hours ?? 24));
-                  setEditingInterval(true);
-                }}
-                title="לחץ לעריכת מרווח"
-              >
-                כל {post.bump_interval_hours} שעות
-                <Pencil className="h-2.5 w-2.5 ms-1 inline opacity-50" />
-              </Badge>
-            )
           )}
         </div>
       </div>

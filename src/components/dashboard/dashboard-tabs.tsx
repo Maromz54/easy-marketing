@@ -264,6 +264,7 @@ export function DashboardTabs({
             editingList={editingList}
             onEditDone={() => setEditingListId(null)}
             facebookGroups={facebookGroups}
+            allLists={distributionLists}
           />
         </section>
 

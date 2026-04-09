@@ -28,6 +28,21 @@ import type { Database } from "@/lib/supabase/types";
 type DistributionListRow = Database["public"]["Tables"]["distribution_lists"]["Row"];
 type FacebookGroupRow = Database["public"]["Tables"]["facebook_groups"]["Row"];
 
+// Map: group_id → list names that already contain it (excluding the list being edited)
+function buildGroupListMap(
+  groups: FacebookGroupRow[],
+  allLists: DistributionListRow[],
+  editingListId?: string
+): Record<string, string[]> {
+  const map: Record<string, string[]> = {};
+  for (const g of groups) {
+    map[g.group_id] = allLists
+      .filter((l) => l.id !== editingListId && l.group_ids.includes(g.group_id))
+      .map((l) => l.name);
+  }
+  return map;
+}
+
 const distributionListSchema = z.object({
   name: z
     .string()
@@ -52,12 +67,14 @@ interface DistributionListFormProps {
   editingList?: DistributionListRow | null;
   onEditDone?: () => void;
   facebookGroups?: FacebookGroupRow[];
+  allLists?: DistributionListRow[];
 }
 
 export function DistributionListForm({
   editingList,
   onEditDone,
   facebookGroups,
+  allLists = [],
 }: DistributionListFormProps) {
   const isEditing = !!editingList;
   const safeGroups = facebookGroups ?? [];
@@ -76,6 +93,12 @@ export function DistributionListForm({
       (g) => g.name.toLowerCase().includes(q) || g.group_id.includes(q)
     );
   }, [safeGroups, groupSearch]);
+
+  // For each group_id: which OTHER lists already contain it?
+  const groupListMap = useMemo(
+    () => buildGroupListMap(safeGroups, allLists, editingList?.id),
+    [safeGroups, allLists, editingList?.id]
+  );
 
   const form = useForm<DistributionListFormValues>({
     resolver: zodResolver(distributionListSchema),
@@ -271,11 +294,12 @@ export function DistributionListForm({
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-slate-200/40">
                       {filteredGroups.map((group) => {
                         const checked = selectedGroupIds.includes(group.group_id);
+                        const overlapLists = groupListMap[group.group_id] ?? [];
                         return (
                           <label
                             key={group.group_id}
                             htmlFor={`fg-${group.group_id}`}
-                            className={`flex items-center gap-3 px-3.5 py-3 cursor-pointer transition-all duration-200 ${
+                            className={`flex items-start gap-3 px-3.5 py-3 cursor-pointer transition-all duration-200 ${
                               checked
                                 ? "bg-blue-50/70"
                                 : "bg-white hover:bg-slate-50/80"
@@ -285,7 +309,7 @@ export function DistributionListForm({
                               id={`fg-${group.group_id}`}
                               checked={checked}
                               onCheckedChange={() => toggleGroup(group.group_id)}
-                              className="transition-all duration-200"
+                              className="transition-all duration-200 mt-0.5"
                             />
                             <div className={`h-9 w-9 rounded-xl shrink-0 overflow-hidden bg-slate-100 flex items-center justify-center transition-all duration-200 ${
                               checked ? "ring-2 ring-blue-400/40" : ""
@@ -310,6 +334,19 @@ export function DistributionListForm({
                               <span className="text-[11px] text-slate-400 font-mono">
                                 {group.group_id}
                               </span>
+                              {overlapLists.length > 0 && (
+                                <span className="mt-1 flex flex-wrap gap-1">
+                                  {overlapLists.map((listName) => (
+                                    <span
+                                      key={listName}
+                                      title={`קיים גם ברשימה: ${listName}`}
+                                      className="inline-block rounded-md bg-amber-50 border border-amber-200 text-amber-700 text-[10px] px-1.5 py-0.5 leading-tight"
+                                    >
+                                      {listName}
+                                    </span>
+                                  ))}
+                                </span>
+                              )}
                             </span>
                           </label>
                         );

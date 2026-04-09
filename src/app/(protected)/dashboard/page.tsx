@@ -55,7 +55,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
       .eq("user_id", user.id)
       .eq("is_template", false)
       .order("created_at", { ascending: false })
-      .limit(500),
+      .limit(200),
     supabase
       .from("links")
       .select("id, slug, destination, label, created_at")
@@ -95,16 +95,20 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   }>;
 
   // ── Round 2: click counts (depends on link IDs from round 1) ──────────
+  // Count per link_id at DB level — avoids loading all rows into memory
   const linkIds = rawLinks.map((l) => l.id);
-  const { data: clicksData } =
-    linkIds.length > 0
-      ? await supabase.from("link_clicks").select("link_id").in("link_id", linkIds)
-      : { data: [] as Array<{ link_id: string }> };
-
   const clickCountMap = new Map<string, number>();
-  (clicksData ?? []).forEach(({ link_id }) => {
-    clickCountMap.set(link_id, (clickCountMap.get(link_id) ?? 0) + 1);
-  });
+  if (linkIds.length > 0) {
+    await Promise.all(
+      linkIds.map(async (id) => {
+        const { count } = await supabase
+          .from("link_clicks")
+          .select("id", { count: "exact", head: true })
+          .eq("link_id", id);
+        clickCountMap.set(id, count ?? 0);
+      })
+    );
+  }
 
   const links: LinkWithCount[] = rawLinks.map((link) => ({
     ...link,
@@ -123,15 +127,15 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
   return (
-    <div className="min-h-screen bg-[#080808] flex flex-col">
+    <div className="min-h-screen bg-gray-50 flex flex-col">
 
       {/* ── Header ────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-30 bg-[#080808]/90 backdrop-blur-2xl border-b border-white/[0.06] px-6 py-3.5 flex items-center justify-between">
-        <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-2xl border-b border-slate-200 px-6 py-3.5 flex items-center justify-between shadow-sm">
+        <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
           EasyMarketing
         </span>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-zinc-400 hidden sm:block">
+          <span className="text-sm text-slate-500 hidden sm:block">
             {displayName}
           </span>
           <form action={logoutAction}>
@@ -139,7 +143,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
               variant="ghost"
               size="sm"
               type="submit"
-              className="text-zinc-400 hover:text-white hover:bg-white/10 rounded-xl transition-all duration-200"
+              className="text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-all duration-200"
             >
               <LogOut className="h-4 w-4 me-1.5" />
               התנתקות
@@ -153,36 +157,36 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
         {/* Welcome */}
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-white">לוח בקרה</h1>
-          <p className="text-zinc-500 mt-1">ברוך הבא בחזרה, {displayName}!</p>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900">לוח בקרה</h1>
+          <p className="text-slate-500 mt-1">ברוך הבא בחזרה, {displayName}!</p>
         </div>
 
         {/* ── Stats ─────────────────────────────────────────────────── */}
         <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
           <StatCard
             icon={<CalendarClock className="h-5 w-5" />}
-            iconBg="text-blue-400"
+            iconBg="text-blue-600"
             label="פוסטים מתוזמנים"
             value={String(scheduledCount)}
             hint={scheduledCount === 0 ? "אין ממתינים" : "ממתינים לפרסום"}
           />
           <StatCard
             icon={<BarChart3 className="h-5 w-5" />}
-            iconBg="text-emerald-400"
+            iconBg="text-emerald-600"
             label="פוסטים שפורסמו"
             value={String(publishedCount)}
             hint={publishedCount === 0 ? "טרם פורסמו" : "פורסמו בהצלחה"}
           />
           <StatCard
             icon={<Link2 className="h-5 w-5" />}
-            iconBg="text-violet-400"
+            iconBg="text-violet-600"
             label="קישורים פעילים"
             value={String(links.length)}
             hint={links.length === 0 ? "אין קישורים עדיין" : "קישורים במעקב"}
           />
           <StatCard
             icon={<MousePointerClick className="h-5 w-5" />}
-            iconBg="text-amber-400"
+            iconBg="text-amber-600"
             label='סה"כ קליקים'
             value={totalClicks.toLocaleString("he-IL")}
             hint={totalClicks === 0 ? "אין קליקים עדיין" : "קליקים על קישורים"}
@@ -218,17 +222,17 @@ function StatCard({
   hint: string;
 }) {
   return (
-    <div className="group bg-white/[0.04] rounded-2xl border border-white/[0.07] hover:border-white/[0.12] hover:bg-white/[0.06] hover:-translate-y-0.5 transition-all duration-300 ease-out p-5">
+    <div className="group bg-white rounded-2xl border border-slate-200 hover:border-slate-300 hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 ease-out p-5">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-xs sm:text-sm font-medium text-zinc-400 leading-tight">
+        <span className="text-xs sm:text-sm font-medium text-slate-500 leading-tight">
           {label}
         </span>
-        <div className={`h-9 w-9 rounded-xl flex items-center justify-center bg-white/[0.06] ${iconBg} transition-transform duration-300 group-hover:scale-110`}>
+        <div className={`h-9 w-9 rounded-xl flex items-center justify-center bg-slate-100 ${iconBg} transition-transform duration-300 group-hover:scale-110`}>
           {icon}
         </div>
       </div>
-      <p className="text-2xl sm:text-3xl font-bold tabular-nums text-white">{value}</p>
-      <p className="text-xs text-zinc-600 mt-1">{hint}</p>
+      <p className="text-2xl sm:text-3xl font-bold tabular-nums text-slate-900">{value}</p>
+      <p className="text-xs text-slate-400 mt-1">{hint}</p>
     </div>
   );
 }
