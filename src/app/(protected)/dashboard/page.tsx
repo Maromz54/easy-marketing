@@ -50,7 +50,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
     supabase
       .from("posts")
       .select(
-        "id, content, status, target_id, scheduled_at, published_at, created_at, error_message, facebook_post_id, recurrence_rule, auto_bump_enabled, bump_interval_hours, last_bumped_at, batch_id, facebook_tokens(page_name)"
+        "id, content, status, target_id, scheduled_at, published_at, created_at, error_message, facebook_post_id, recurrence_rule, auto_bump_enabled, bump_interval_hours, last_bumped_at, batch_id, image_urls, link_url, facebook_tokens(page_name)"
       )
       .eq("user_id", user.id)
       .eq("is_template", false)
@@ -95,19 +95,17 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   }>;
 
   // ── Round 2: click counts (depends on link IDs from round 1) ──────────
-  // Count per link_id at DB level — avoids loading all rows into memory
+  // Single query — fetch all click link_ids and count in JS (1 round trip vs N)
   const linkIds = rawLinks.map((l) => l.id);
   const clickCountMap = new Map<string, number>();
   if (linkIds.length > 0) {
-    await Promise.all(
-      linkIds.map(async (id) => {
-        const { count } = await supabase
-          .from("link_clicks")
-          .select("id", { count: "exact", head: true })
-          .eq("link_id", id);
-        clickCountMap.set(id, count ?? 0);
-      })
-    );
+    const { data: allClicks } = await supabase
+      .from("link_clicks")
+      .select("link_id")
+      .in("link_id", linkIds);
+    for (const row of allClicks ?? []) {
+      clickCountMap.set(row.link_id, (clickCountMap.get(row.link_id) ?? 0) + 1);
+    }
   }
 
   const links: LinkWithCount[] = rawLinks.map((link) => ({

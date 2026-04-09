@@ -56,7 +56,7 @@ export async function GET(request: Request) {
   // Postgres serializes writes, so concurrent cron invocations won't double-process.
   const { data: claimedPosts, error: claimError } = await supabase
     .from("posts")
-    .update({ status: "failed", error_message: "__processing__" }) // temp marker
+    .update({ status: "processing" })
     .eq("status", "scheduled")
     .lte("scheduled_at", now)
     .select(

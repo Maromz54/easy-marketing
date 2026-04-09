@@ -231,6 +231,9 @@ export async function cancelPostAction(postId: string): Promise<CancelPostResult
 }
 
 // ── updatePostAction ───────────────────────────────────────────────────────────
+// Supports editing both "scheduled" and "draft" posts.
+// - publishMode "scheduled" → validates future date, saves as scheduled
+// - publishMode "now"       → saves as draft (no publishing)
 
 export async function updatePostAction(input: UpdatePostInput): Promise<UpdatePostResult> {
   const supabase = await createClient();
@@ -239,26 +242,30 @@ export async function updatePostAction(input: UpdatePostInput): Promise<UpdatePo
 
   const { data: existing } = await supabase
     .from("posts")
-    .select("id")
+    .select("id, status")
     .eq("id", input.postId)
     .eq("user_id", user.id)
-    .eq("status", "scheduled")
+    .in("status", ["scheduled", "draft"])
     .maybeSingle();
 
   if (!existing) {
     return { error: "הפוסט לא נמצא, אינו בבעלותך, או שאינו ניתן לעריכה." };
   }
 
-  const scheduledAt =
-    input.publishMode === "scheduled" && input.scheduledAt
-      ? new Date(input.scheduledAt).toISOString()
-      : new Date().toISOString();
+  let newStatus: string = existing.status;
+  let scheduledAt: string | null = null;
 
   if (input.publishMode === "scheduled") {
     const scheduled = new Date(input.scheduledAt ?? "");
     if (isNaN(scheduled.getTime()) || scheduled.getTime() <= Date.now()) {
       return { error: "תאריך התזמון חייב להיות בעתיד." };
     }
+    scheduledAt = scheduled.toISOString();
+    newStatus = "scheduled";
+  } else {
+    // "now" mode: keep as draft, just save changes
+    newStatus = "draft";
+    scheduledAt = null;
   }
 
   const recurrenceRule = input.recurrenceRule?.trim() || null;
@@ -272,6 +279,7 @@ export async function updatePostAction(input: UpdatePostInput): Promise<UpdatePo
       link_url: input.linkUrl || null,
       scheduled_at: scheduledAt,
       recurrence_rule: recurrenceRule,
+      status: newStatus,
     })
     .eq("id", input.postId);
 
@@ -282,6 +290,66 @@ export async function updatePostAction(input: UpdatePostInput): Promise<UpdatePo
 
   revalidatePath("/dashboard");
   return { success: true };
+}
+
+// ── updateTemplateAction ───────────────────────────────────────────────────────
+
+export async function updateTemplateAction(input: {
+  templateId: string;
+  content: string;
+  linkUrl?: string;
+}): Promise<{ success?: boolean; error?: string }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  if (!input.content.trim()) return { error: "תוכן התבנית הוא חובה." };
+
+  const { data: existing } = await supabase
+    .from("posts")
+    .select("id")
+    .eq("id", input.templateId)
+    .eq("user_id", user.id)
+    .eq("is_template", true)
+    .maybeSingle();
+
+  if (!existing) return { error: "התבנית לא נמצאה." };
+
+  const { error: dbError } = await supabase
+    .from("posts")
+    .update({ content: input.content, link_url: input.linkUrl || null })
+    .eq("id", input.templateId);
+
+  if (dbError) {
+    console.error("[updateTemplateAction] DB error:", dbError);
+    return { error: "שגיאה בעדכון התבנית. אנא נסה שוב." };
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
+// ── deleteAllPostsAction ───────────────────────────────────────────────────────
+// Deletes ALL non-template posts for the current user (full history reset).
+
+export async function deleteAllPostsAction(): Promise<{ success?: boolean; error?: string; count?: number }> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "המשתמש אינו מחובר." };
+
+  const { error: dbError, count } = await supabase
+    .from("posts")
+    .delete({ count: "exact" })
+    .eq("user_id", user.id)
+    .eq("is_template", false);
+
+  if (dbError) {
+    console.error("[deleteAllPostsAction] DB error:", dbError);
+    return { error: "שגיאה במחיקת ההיסטוריה. אנא נסה שוב." };
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true, count: count ?? 0 };
 }
 
 // ── createPostAction ───────────────────────────────────────────────────────────

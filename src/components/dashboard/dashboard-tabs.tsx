@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Send, Link2, Puzzle, ListChecks, LayoutTemplate, RefreshCw, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -57,6 +57,15 @@ export function DashboardTabs({
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (syncPollRef.current) clearInterval(syncPollRef.current);
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    };
+  }, []);
 
   // Build a group_id → name lookup for PostCard badges
   const groupNameMap = useMemo(() => {
@@ -101,18 +110,18 @@ export function DashboardTabs({
       return;
     }
     let elapsed = 0;
-    const poll = setInterval(() => {
+    syncPollRef.current = setInterval(() => {
       elapsed += 5000;
       if (elapsed >= 3 * 60 * 1000) {
-        clearInterval(poll);
+        if (syncPollRef.current) clearInterval(syncPollRef.current);
         setIsSyncing(false);
         setSyncMessage("הסנכרון לא הסתיים — ודא שהתוסף פעיל ורענן את הדף.");
         return;
       }
       router.refresh();
     }, 5000);
-    setTimeout(() => {
-      clearInterval(poll);
+    syncTimeoutRef.current = setTimeout(() => {
+      if (syncPollRef.current) clearInterval(syncPollRef.current);
       setIsSyncing(false);
       setSyncMessage(null);
       router.refresh();

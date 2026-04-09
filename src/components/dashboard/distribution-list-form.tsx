@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -82,6 +82,7 @@ export function DistributionListForm({
   const [serverError, setServerError] = useState<string | null>(null);
   const [successName, setSuccessName] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [groupSearch, setGroupSearch] = useState("");
@@ -104,6 +105,12 @@ export function DistributionListForm({
     resolver: zodResolver(distributionListSchema),
     defaultValues: { name: "", groupIdsRaw: "" },
   });
+
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (editingList) {
@@ -180,6 +187,8 @@ export function DistributionListForm({
           setSuccessName(values.name);
           setSelectedGroupIds([]);
           form.reset();
+          if (successTimerRef.current) clearTimeout(successTimerRef.current);
+          successTimerRef.current = setTimeout(() => setSuccessName(null), 5000);
         }
       }
     });

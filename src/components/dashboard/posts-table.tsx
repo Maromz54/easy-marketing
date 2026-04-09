@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import {
   cancelScheduledPostAction,
   deletePostAction,
+  deleteAllPostsAction,
   toggleAutoBumpAction,
   updateBumpIntervalAction,
 } from "@/actions/posts";
@@ -30,6 +31,8 @@ export interface PostRow {
   bump_interval_hours: number | null;
   last_bumped_at: string | null;
   batch_id: string | null;
+  image_urls: string[];
+  link_url: string | null;
   // joined via foreign key
   facebook_tokens: { page_name: string | null } | null;
 }
@@ -78,6 +81,17 @@ type DisplayItem =
 
 export function PostsTable({ posts, onEdit, onResumeDraft, groupNameMap }: PostsTableProps) {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
+  const [isResetting, startResetTransition] = useTransition();
+
+  function handleResetHistory() {
+    const scheduledCount = posts.filter((p) => p.status === "scheduled").length;
+    const total = posts.length;
+    const msg = scheduledCount > 0
+      ? `למחוק את כל ${total} הפוסטים כולל ${scheduledCount} מתוזמנים? פעולה זו אינה הפיכה.`
+      : `למחוק את כל ${total} הפוסטים מההיסטוריה? פעולה זו אינה הפיכה.`;
+    if (!window.confirm(msg)) return;
+    startResetTransition(async () => { await deleteAllPostsAction(); });
+  }
 
   const filtered = posts.filter((p) => {
     if (activeFilter === "published") return p.status === "published";
@@ -134,11 +148,24 @@ export function PostsTable({ posts, onEdit, onResumeDraft, groupNameMap }: Posts
 
   return (
     <section className="space-y-5">
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight text-slate-900">היסטוריית פוסטים</h2>
-        <p className="text-sm text-slate-500 mt-0.5">
-          כל הפוסטים שנוצרו — מפורסמים, מתוזמנים ושנכשלו
-        </p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight text-slate-900">היסטוריית פוסטים</h2>
+          <p className="text-sm text-slate-500 mt-0.5">
+            כל הפוסטים שנוצרו — מפורסמים, מתוזמנים ושנכשלו
+          </p>
+        </div>
+        {posts.length > 0 && (
+          <button
+            onClick={handleResetHistory}
+            disabled={isResetting}
+            className={`flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-slate-400 hover:text-red-500 hover:bg-red-50 border border-slate-200 transition-all duration-200 shrink-0 ${isResetting ? "opacity-50 pointer-events-none" : ""}`}
+            title="מחק את כל ההיסטוריה"
+          >
+            {isResetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            איפוס היסטוריה
+          </button>
+        )}
       </div>
 
       {/* Filter pills */}
@@ -283,6 +310,29 @@ function BumpControl({ post }: { post: PostRow }) {
   );
 }
 
+// ── Delete all drafts in batch ────────────────────────────────────────────────
+function DeleteDraftBatchButton({ draftIds }: { draftIds: string[] }) {
+  const [isPending, startTransition] = useTransition();
+
+  function handleDelete() {
+    if (!window.confirm(`למחוק לצמיתות ${draftIds.length} טיוטות מהבאצ׳ הזה?`)) return;
+    startTransition(async () => {
+      await Promise.all(draftIds.map((id) => deletePostAction(id)));
+    });
+  }
+
+  return (
+    <button
+      disabled={isPending}
+      onClick={handleDelete}
+      className={`flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1 ${isPending ? "opacity-50 pointer-events-none" : ""}`}
+    >
+      {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+      מחק טיוטות ({draftIds.length})
+    </button>
+  );
+}
+
 // ── Cancel button for a single row ────────────────────────────────────────────
 function CancelRowButton({ postId }: { postId: string }) {
   const [isPending, startTransition] = useTransition();
@@ -335,6 +385,7 @@ function GroupedPostCard({
   const [expanded, setExpanded] = useState(false);
 
   const scheduledIds = posts.filter((p) => p.status === "scheduled").map((p) => p.id);
+  const draftIds     = posts.filter((p) => p.status === "draft").map((p) => p.id);
 
   // Use the first post for the content preview
   const representative = posts[0];
@@ -494,9 +545,10 @@ function GroupedPostCard({
       </div>
 
       {/* ── Batch actions footer ── */}
-      {scheduledIds.length > 0 && (
-        <div className="px-5 py-3 bg-slate-50/50 border-t border-slate-100 flex items-center gap-2">
-          <CancelAllButton scheduledIds={scheduledIds} />
+      {(scheduledIds.length > 0 || draftIds.length > 0) && (
+        <div className="px-5 py-3 bg-slate-50/50 border-t border-slate-100 flex flex-wrap items-center gap-2">
+          {scheduledIds.length > 0 && <CancelAllButton scheduledIds={scheduledIds} />}
+          {draftIds.length > 0 && <DeleteDraftBatchButton draftIds={draftIds} />}
         </div>
       )}
     </div>
@@ -661,15 +713,15 @@ function PostCard({
 
           {post.status === "draft" && (
             <>
-              {/* Resume draft into composer */}
-              <Button
-                size="sm"
-                onClick={() => onResumeDraft?.(post)}
-                className="flex-1 sm:flex-none rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm hover:shadow-md transition-all duration-200 text-xs"
+              {/* Edit draft in composer */}
+              <button
+                onClick={() => onEdit(post)}
+                aria-label="ערוך טיוטה"
+                className="flex items-center gap-1.5 h-8 px-3 rounded-xl text-xs font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-1"
               >
-                <RefreshCw className="h-3.5 w-3.5 ms-1.5" />
-                המשך עריכה
-              </Button>
+                <Pencil className="h-3.5 w-3.5" />
+                ערוך טיוטה
+              </button>
               {/* Delete draft */}
               <button
                 onClick={handleDelete}

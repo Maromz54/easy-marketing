@@ -5,7 +5,13 @@
       "Bash(npm run:*)",
       "Bash(find 'c:/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/supabase/migrations' -name *.sql -type f)",
       "Read(//c/Users/masga/OneDrive/**)",
-      "Bash(grep -r \"localStorage\\\\|sessionStorage\\\\|draft\" 'c:\\\\Users\\\\masga\\\\OneDrive\\\\שולחן העבודה\\\\EasyMarketing\\\\src\\\\components\\\\dashboard' --include=*.tsx)"
+      "Bash(grep -r \"localStorage\\\\|sessionStorage\\\\|draft\" 'c:\\\\Users\\\\masga\\\\OneDrive\\\\שולחן העבודה\\\\EasyMarketing\\\\src\\\\components\\\\dashboard' --include=*.tsx)",
+      "Read(//c/Users/masga/OneDove/שולחן העבודה/EasyMarketing/src/components/dashboard/**)",
+      "Bash(find \"/c/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/src\" -name \"*.tsx\" -type f -exec grep -l \"use client\" {} \\\\;)",
+      "Bash(wc -l \"/c/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/src/components/dashboard\"/*.tsx)",
+      "Bash(find \"/c/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/src\" -name \"*.tsx\" -type f -exec wc -l {} \\\\;)",
+      "Read(//c/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/**)",
+      "Bash(find src:*)"
     ]
   }
 }

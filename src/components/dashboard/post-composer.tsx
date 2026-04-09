@@ -7,7 +7,7 @@ import { z } from "zod";
 import {
   Loader2, Send, CalendarClock, Image as ImageIcon,
   Link2, CheckCircle2, Target, Puzzle, ListChecks, Pencil, X, Upload, RefreshCw,
-  Shuffle, Bell,
+  Shuffle, Bell, GripVertical, ChevronLeft, ChevronRight,
 } from "lucide-react";
 
 import { createPostAction, updatePostAction, saveAsTemplateAction } from "@/actions/posts";
@@ -198,46 +198,30 @@ export function PostComposer({
             .slice(0, 16)
         : "";
 
-      const ep = editingPost as PostRow & {
-        target_id?: string | null;
-        image_url?: string | null;
-        image_urls?: string[];
-        link_url?: string | null;
-        recurrence_rule?: string | null;
-      };
-
       // Parse existing recurrence rule back into form fields
       let recurrenceType: "none" | "weekly" | "monthly" = "none";
       let recurrenceDays: number[] = [];
-      if (ep.recurrence_rule?.startsWith("weekly:")) {
+      if (editingPost.recurrence_rule?.startsWith("weekly:")) {
         recurrenceType = "weekly";
-        recurrenceDays = ep.recurrence_rule.slice(7).split(",").map(Number);
-      } else if (ep.recurrence_rule === "monthly") {
+        recurrenceDays = editingPost.recurrence_rule.slice(7).split(",").map(Number);
+      } else if (editingPost.recurrence_rule === "monthly") {
         recurrenceType = "monthly";
       }
-
-      // Normalise image_urls: prefer array, fall back to single image_url
-      const imageUrls =
-        ep.image_urls?.length
-          ? ep.image_urls
-          : ep.image_url
-          ? [ep.image_url]
-          : [];
 
       form.reset({
         facebookTokenId: EXTENSION_SENTINEL,
         distributionListIds: [],
         extraGroupIds: "",
-        targetId: ep.target_id ?? "",
+        targetId: editingPost.target_id ?? "",
         content: editingPost.content,
-        imageUrls,
-        linkUrl: ep.link_url ?? "",
+        imageUrls: editingPost.image_urls ?? [],
+        linkUrl: editingPost.link_url ?? "",
         publishMode: editingPost.scheduled_at ? "scheduled" : "now",
         scheduledAt: localScheduledAt,
         recurrenceType,
         recurrenceDays,
-        autoBumpEnabled: (editingPost as any).auto_bump_enabled ?? false,
-        bumpIntervalHours: (editingPost as any).bump_interval_hours ?? 24,
+        autoBumpEnabled: editingPost.auto_bump_enabled ?? false,
+        bumpIntervalHours: editingPost.bump_interval_hours ?? 24,
       });
     } else {
       // Not editing — try to restore a saved draft from localStorage
@@ -460,6 +444,18 @@ export function PostComposer({
     );
   }
 
+  // Image reorder state
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
+
+  function moveImage(from: number, to: number) {
+    if (from === to) return;
+    const urls = [...(watchedImageUrls ?? [])];
+    const [item] = urls.splice(from, 1);
+    urls.splice(to, 0, item);
+    form.setValue("imageUrls", urls, { shouldValidate: true });
+  }
+
   // ── Submit ──────────────────────────────────────────────────────────────────
   function onSubmit(values: PostFormValues) {
     setServerError(null);
@@ -551,19 +547,54 @@ export function PostComposer({
             )}
             {isEditing ? "עריכת פוסט" : "כתיבת פוסט חדש"}
           </span>
-          {isEditing && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              aria-label="ביטול עריכה"
-              className="text-slate-400 hover:text-slate-600 text-xs rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
-              onClick={onEditDone}
-            >
-              <X className="h-3.5 w-3.5 ms-1" />
-              ביטול עריכה
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {!isEditing && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="נקה טופס"
+                title="נקה את כל השדות"
+                className="text-slate-400 hover:text-slate-600 text-xs rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
+                onClick={() => {
+                  try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {}
+                  form.reset({
+                    facebookTokenId: EXTENSION_SENTINEL,
+                    distributionListIds: [],
+                    extraGroupIds: "",
+                    targetId: "",
+                    content: "",
+                    imageUrls: [],
+                    linkUrl: "",
+                    publishMode: "now",
+                    scheduledAt: "",
+                    recurrenceType: "none",
+                    recurrenceDays: [],
+                    autoBumpEnabled: false,
+                    bumpIntervalHours: 24,
+                  });
+                  setServerError(null);
+                  setIsSuccess(false);
+                }}
+              >
+                <X className="h-3.5 w-3.5 ms-1" />
+                נקה טופס
+              </Button>
+            )}
+            {isEditing && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="ביטול עריכה"
+                className="text-slate-400 hover:text-slate-600 text-xs rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
+                onClick={onEditDone}
+              >
+                <X className="h-3.5 w-3.5 ms-1" />
+                ביטול עריכה
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -786,28 +817,101 @@ export function PostComposer({
                       onChange={handleImageSelect}
                     />
 
-                    {/* Thumbnail grid */}
+                    {/* Thumbnail grid — draggable to reorder */}
                     {(watchedImageUrls ?? []).length > 0 && (
                       <div className="flex flex-wrap gap-2">
-                        {(watchedImageUrls ?? []).map((url, idx) => (
-                          <div key={url} className="relative group">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={url}
-                              alt={`תמונה ${idx + 1}`}
-                              className="h-20 w-20 rounded-xl object-cover border border-slate-200/60"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => removeImage(idx)}
-                              aria-label={`הסר תמונה ${idx + 1}`}
-                              className="absolute -top-1.5 -end-1.5 h-5 w-5 rounded-full bg-destructive text-white flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-1"
+                        {(watchedImageUrls ?? []).map((url, idx) => {
+                          const total = (watchedImageUrls ?? []).length;
+                          const isDragging = dragIdx === idx;
+                          const isDropTarget = dropIdx === idx && dragIdx !== null && dragIdx !== idx;
+                          return (
+                            <div
+                              key={url}
+                              draggable
+                              onDragStart={(e) => {
+                                e.dataTransfer.effectAllowed = "move";
+                                setDragIdx(idx);
+                              }}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = "move";
+                                if (dropIdx !== idx) setDropIdx(idx);
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                if (dragIdx !== null) moveImage(dragIdx, idx);
+                                setDragIdx(null);
+                                setDropIdx(null);
+                              }}
+                              onDragEnd={() => {
+                                setDragIdx(null);
+                                setDropIdx(null);
+                              }}
+                              className={`relative group cursor-grab active:cursor-grabbing select-none transition-all duration-150 ${
+                                isDragging ? "opacity-40 scale-95" : ""
+                              } ${isDropTarget ? "ring-2 ring-blue-400 ring-offset-2 rounded-xl" : ""}`}
                             >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </div>
-                        ))}
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={url}
+                                alt={`תמונה ${idx + 1}`}
+                                className="h-20 w-20 rounded-xl object-cover border border-slate-200/60 pointer-events-none"
+                                draggable={false}
+                              />
+
+                              {/* Order badge */}
+                              <span className="absolute top-1 start-1 h-4 min-w-4 px-1 rounded-md bg-black/50 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                                {idx + 1}
+                              </span>
+
+                              {/* Drag handle hint */}
+                              <span className="absolute top-1 end-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <GripVertical className="h-3.5 w-3.5 text-white drop-shadow" />
+                              </span>
+
+                              {/* Remove button */}
+                              <button
+                                type="button"
+                                onClick={() => removeImage(idx)}
+                                aria-label={`הסר תמונה ${idx + 1}`}
+                                className="absolute -top-1.5 -end-1.5 h-5 w-5 rounded-full bg-destructive text-white flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-1"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+
+                              {/* Arrow buttons for mobile / accessibility (shown at bottom on hover) */}
+                              {total > 1 && (
+                                <div className="absolute bottom-0 inset-x-0 flex justify-between px-0.5 pb-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                                  {/* Move earlier (→ in RTL = lower index) */}
+                                  <button
+                                    type="button"
+                                    aria-label="הזז שמאלה"
+                                    disabled={idx === total - 1}
+                                    onClick={() => moveImage(idx, idx + 1)}
+                                    className="h-5 w-5 rounded-md bg-black/50 text-white flex items-center justify-center disabled:opacity-0 hover:bg-black/70 transition-colors"
+                                  >
+                                    <ChevronLeft className="h-3 w-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label="הזז ימינה"
+                                    disabled={idx === 0}
+                                    onClick={() => moveImage(idx, idx - 1)}
+                                    className="h-5 w-5 rounded-md bg-black/50 text-white flex items-center justify-center disabled:opacity-0 hover:bg-black/70 transition-colors"
+                                  >
+                                    <ChevronRight className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
+                    )}
+                    {(watchedImageUrls ?? []).length > 1 && (
+                      <p className="text-[11px] text-slate-400">
+                        גרור תמונות לשינוי הסדר, או השתמש בחצים
+                      </p>
                     )}
 
                     <Button
@@ -1101,6 +1205,8 @@ export function PostComposer({
                 >
                   {isPending ? (
                     <><Loader2 className="ms-2 h-4 w-4 animate-spin" />שומר...</>
+                  ) : isEditing && editingPost?.status === "draft" && publishMode === "now" ? (
+                    <><Pencil className="ms-2 h-4 w-4" />שמור טיוטה</>
                   ) : isEditing ? (
                     <><Pencil className="ms-2 h-4 w-4" />שמור שינויים</>
                   ) : publishMode === "now" ? (

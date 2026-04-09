@@ -78,12 +78,14 @@ export async function POST(request: NextRequest) {
   // This keeps the DB an exact mirror of the user's current state.
   let removed = 0;
   if (scrapedIds.length > 0) {
+    // Sanitize IDs — group IDs from Facebook are numeric strings; reject anything else
+    const safeIds = scrapedIds.filter((id) => /^\d+$/.test(String(id)));
     // Delete rows belonging to this user whose group_id is NOT in the scraped set
     const { data: deleted, error: delErr } = await supabase
       .from("facebook_groups")
       .delete()
       .eq("user_id", userId)
-      .not("group_id", "in", `(${scrapedIds.join(",")})`)
+      .not("group_id", "in", `(${safeIds.join(",")})`)
       .select("id");
 
     if (delErr) {
