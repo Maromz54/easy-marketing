@@ -47,6 +47,16 @@ export async function GET(
   return NextResponse.redirect(link.destination, { status: 302 });
 }
 
+// ── Bot/crawler user-agent patterns ────────────────────────────────────────
+// These generate link previews and should NOT count as real clicks.
+const BOT_UA_PATTERN =
+  /bot|crawl|spider|preview|fetch|scan|check|monitor|facebookexternalhit|WhatsApp|TelegramBot|Twitterbot|LinkedInBot|Slackbot|Discordbot|pinterest|Google-Read-Aloud|DuckDuckBot|baiduspider|YandexBot|SemrushBot|AhrefsBot|MJ12bot|ia_archiver|curl|python-requests|okhttp|axios|Go-http/i;
+
+function isBot(ua: string | null): boolean {
+  if (!ua) return true; // no user-agent → treat as bot
+  return BOT_UA_PATTERN.test(ua);
+}
+
 // ── Helper: record one click event ─────────────────────────────────────────
 async function recordClick(
   supabase: ReturnType<typeof createServiceClient>,
@@ -55,6 +65,9 @@ async function recordClick(
 ): Promise<void> {
   try {
     const ua = request.headers.get("user-agent") ?? null;
+
+    // Skip bots and link-preview crawlers — they inflate counts
+    if (isBot(ua)) return;
 
     // Prefer x-forwarded-for (set by proxies/CDN) then fall back to cf-connecting-ip
     const rawIp =
