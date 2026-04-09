@@ -790,7 +790,7 @@ export function PostComposer({
                     {(watchedImageUrls ?? []).length > 0 && (
                       <div className="flex flex-wrap gap-2">
                         {(watchedImageUrls ?? []).map((url, idx) => (
-                          <div key={idx} className="relative group">
+                          <div key={url} className="relative group">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
                               src={url}

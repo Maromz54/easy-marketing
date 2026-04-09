@@ -501,7 +501,7 @@ export async function createPostAction(
       err instanceof Error ? err.message : "שגיאה לא ידועה בפרסום לפייסבוק.";
     console.error("[createPostAction] Facebook publish error:", err);
 
-    await supabase.from("posts").insert({
+    const { error: failedInsertError } = await supabase.from("posts").insert({
       user_id: user.id,
       facebook_token_id: input.facebookTokenId,
       target_id: targetId,
@@ -514,6 +514,10 @@ export async function createPostAction(
       status: "failed",
       error_message: message,
     });
+
+    if (failedInsertError) {
+      console.error("[createPostAction] Failed to record 'failed' status in DB:", failedInsertError);
+    }
 
     revalidatePath("/dashboard");
     return { error: message };
