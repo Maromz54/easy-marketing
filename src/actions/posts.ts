@@ -252,7 +252,7 @@ export async function updatePostAction(input: UpdatePostInput): Promise<UpdatePo
     return { error: "הפוסט לא נמצא, אינו בבעלותך, או שאינו ניתן לעריכה." };
   }
 
-  let newStatus: string = existing.status;
+  let newStatus: "draft" | "scheduled" | "processing" | "published" | "failed" | "cancelled" = existing.status;
   let scheduledAt: string | null = null;
 
   if (input.publishMode === "scheduled") {
