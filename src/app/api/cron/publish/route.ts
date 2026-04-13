@@ -51,14 +51,26 @@ export async function GET(request: Request) {
   const supabase = createServiceClient();
   const now = new Date().toISOString();
 
-  // ── Step 1: Atomically claim due scheduled posts ───────────────────────────
-  // We update status → 'processing' in a single UPDATE statement.
-  // Postgres serializes writes, so concurrent cron invocations won't double-process.
+  // ── Step 0: Recovery — reset any page posts stuck in "processing" > 15 min ─
+  // (handles cron function crashes mid-flight)
+  await supabase
+    .from("posts")
+    .update({ status: "scheduled" })
+    .eq("status", "processing")
+    .not("facebook_token_id", "is", null)
+    .lt("scheduled_at", new Date(Date.now() - 15 * 60 * 1000).toISOString());
+
+  // ── Step 1: Atomically claim due scheduled PAGE posts ─────────────────────
+  // Filter: facebook_token_id IS NOT NULL — leaves null-token group posts for
+  // the VPS Playwright worker. Without this filter the cron would claim group
+  // posts, immediately mark them "failed" (no token), and the VPS worker would
+  // never see them (race condition introduced by the every-5-min cron schedule).
   const { data: claimedPosts, error: claimError } = await supabase
     .from("posts")
     .update({ status: "processing" })
     .eq("status", "scheduled")
     .lte("scheduled_at", now)
+    .not("facebook_token_id", "is", null)
     .select(
       "id, content, image_url, image_urls, link_url, target_id, facebook_token_id, facebook_tokens(page_id, access_token)"
     )

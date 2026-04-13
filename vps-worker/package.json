@@ -1,0 +1,14 @@
+{
+  "name": "fb-group-publisher",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "setup": "node src/index.js --setup",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2",
+    "dotenv": "^16",
+    "playwright": "^1"
+  }
+}
