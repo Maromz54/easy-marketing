@@ -771,6 +771,7 @@ export function PostComposer({
                       <Textarea
                         placeholder="מה תרצה לשתף היום?"
                         className="min-h-[140px]"
+                        dir="rtl"
                         {...field}
                       />
                     </FormControl>

@@ -137,14 +137,37 @@ window.easyMarketingPost = async function (content, imageUrls, linkUrl, imageDat
   document.execCommand("selectAll", false);
   await sleep(80);
 
-  const ok = document.execCommand("insertText", false, fullContent);
-  log(`execCommand('insertText') returned: ${ok}`);
+  // Split on newlines and insert each line with an explicit paragraph break between them.
+  // A single execCommand("insertText") call with "\n" does NOT create paragraph breaks
+  // in Facebook's Lexical editor — it collapses all lines into one block.
+  const contentLines = fullContent.split("\n");
+  let ok = false;
+  for (let li = 0; li < contentLines.length; li++) {
+    if (contentLines[li]) {
+      ok = document.execCommand("insertText", false, contentLines[li]) || ok;
+    }
+    if (li < contentLines.length - 1) {
+      document.execCommand("insertParagraph", false);
+    }
+  }
+  log(`execCommand('insertText') with paragraph breaks: ok=${ok}, lines=${contentLines.length}`);
   log("Composer text after inject:", JSON.stringify((composer.textContent ?? "").slice(0, 80)));
 
   log("Waiting 2 s for Lexical to enable the פרסום button...");
   await sleep(2000);
 
-  const checkInjected = () => (composer.textContent ?? "").includes(fullContent.slice(0, 15));
+  const expectedNewlines = (fullContent.match(/\n/g) ?? []).length;
+  const checkInjected = () => {
+    const composerText = composer.textContent ?? "";
+    if (!composerText.includes(fullContent.slice(0, 15).replace(/\n/g, ""))) return false;
+    // If the content has newlines, verify Lexical created paragraph elements for them.
+    // Without this check, a collapsed single-block injection would pass incorrectly.
+    if (expectedNewlines > 0) {
+      const paragraphCount = composer.querySelectorAll("p").length;
+      return paragraphCount > 1;
+    }
+    return true;
+  };
 
   if (!checkInjected()) {
     // ── Text fallback 1: setData paste ──────────────────────────────────────
