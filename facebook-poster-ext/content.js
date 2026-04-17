@@ -173,6 +173,10 @@ window.easyMarketingPost = async function (content, imageUrls, linkUrl, imageDat
     // ── Text fallback 1: setData paste ──────────────────────────────────────
     log("execCommand did not insert text — trying DataTransfer setData paste...");
     composer.focus();
+    // Clear any partial content from Method 1 before pasting (prevents duplication)
+    document.execCommand("selectAll", false);
+    await sleep(50);
+    document.execCommand("delete", false);
     await sleep(200);
     const dtText = new DataTransfer();
     dtText.setData("text/plain", fullContent);
@@ -190,6 +194,10 @@ window.easyMarketingPost = async function (content, imageUrls, linkUrl, imageDat
     log("setData paste failed — trying File-based paste (text/plain File in DataTransfer)...");
     try {
       composer.focus();
+      // Clear before pasting to prevent duplication from previous attempts
+      document.execCommand("selectAll", false);
+      await sleep(50);
+      document.execCommand("delete", false);
       await sleep(200);
       const textBlob = new Blob([fullContent], { type: "text/plain" });
       const textFile = new File([textBlob], "post_text.txt", { type: "text/plain" });

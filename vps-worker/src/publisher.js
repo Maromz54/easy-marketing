@@ -49,8 +49,8 @@ export async function getBrowser(headless = HEADLESS) {
 
   _browser = await chromium.launchPersistentContext(SESSION_DIR, {
     headless,
+    channel: 'chrome',   // system Google Chrome supports headless:false via xvfb
     viewport: { width: 1280, height: 900 },
-    // Realistic Linux Chrome user-agent
     userAgent:
       'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     args: [
