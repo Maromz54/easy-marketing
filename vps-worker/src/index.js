@@ -97,7 +97,7 @@ async function main() {
 
       try {
         await withTimeout(
-          postToGroup(post.id, post.target_id, post.content, post.image_urls ?? []),
+          postToGroup(post.id, post.target_id, post.content, post.image_urls ?? [], post.link_url ?? null),
           POST_TIMEOUT_MS
         );
         success = true;

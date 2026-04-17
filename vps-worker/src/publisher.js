@@ -43,10 +43,13 @@ export async function closeBrowser() {
  * Post to a Facebook group via browser automation.
  * Logic mirrors the Chrome Extension's easyMarketingPost() in content.js.
  */
-export async function postToGroup(postId, groupId, content, imageUrls = []) {
+export async function postToGroup(postId, groupId, content, imageUrls = [], linkUrl = null) {
   const browser  = await getBrowser();
   const page     = await browser.newPage();
   const tmpFiles = [];
+
+  // Build full post content: text body + link URL appended (if any)
+  const fullContent = linkUrl ? `${content}\n\n${linkUrl}` : content;
 
   try {
     // ── 1. Navigate ───────────────────────────────────────────────────────
@@ -129,8 +132,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
     await sleep(3000);
 
     // ── 3. Find Lexical editor INSIDE the dialog (mirrors extension STEP 2) ──
-    // Scoping to div[role="dialog"] prevents accidentally targeting comment boxes,
-    // which also use Lexical editors.
+    // Scoping to div[role="dialog"] prevents accidentally targeting comment boxes.
     const COMPOSER_SELECTORS = [
       'div[role="dialog"] div[role="textbox"][contenteditable="true"]',
       'div[role="dialog"] div[data-lexical-editor="true"]',
@@ -163,23 +165,43 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
     }, composerEl);
     await sleep(400);
 
-    // ── 4. Inject text (mirrors extension STEP 3) ─────────────────────────
-    // Primary: insertText + insertParagraph per line (preserves line breaks in Lexical)
-    const textOk = await page.evaluate(({ el, text }) => {
+    // ── 4. Inject text (4-method approach mirroring extension) ────────────
+
+    // Helper: check that text AND line breaks were injected into Lexical.
+    // Lexical creates a <p> per paragraph — if we have newlines but only
+    // one <p>, the insertParagraph execCommand silently failed.
+    const expectedNewlines = (fullContent.match(/\n/g) ?? []).length;
+
+    const checkInjected = async () => {
+      return page.evaluate(({ el, text, newlines }) => {
+        const composerText = el.textContent ?? '';
+        if (!composerText.includes(text.slice(0, 15).replace(/\n/g, ''))) return false;
+        if (newlines > 0) {
+          const paragraphCount = el.querySelectorAll('p').length;
+          return paragraphCount > 1;
+        }
+        return true;
+      }, { el: composerEl, text: fullContent, newlines: expectedNewlines });
+    };
+
+    // Method 1: execCommand insertText + insertParagraph
+    await page.evaluate(({ el, text }) => {
       el.focus();
       document.execCommand('selectAll', false);
       const lines = text.split('\n');
-      let ok = false;
       for (let i = 0; i < lines.length; i++) {
-        if (lines[i]) ok = document.execCommand('insertText', false, lines[i]) || ok;
+        if (lines[i]) document.execCommand('insertText', false, lines[i]);
         if (i < lines.length - 1) document.execCommand('insertParagraph', false);
       }
-      return ok || (el.textContent ?? '').trim().length > 0;
-    }, { el: composerEl, text: content });
+    }, { el: composerEl, text: fullContent });
 
-    if (!textOk) {
-      // Fallback: DataTransfer clipboard paste (same as extension Method 2)
-      console.warn(`[publisher] post=${postId} execCommand failed — trying clipboard paste`);
+    await sleep(500);
+    let injected = await checkInjected();
+    console.log(`[publisher] post=${postId} Text M1 injected=${injected}`);
+
+    // Method 2: DataTransfer setData paste
+    if (!injected) {
+      console.warn(`[publisher] post=${postId} M1 failed — trying M2 setData paste`);
       await page.evaluate(({ el, text }) => {
         el.focus();
         document.execCommand('selectAll', false);
@@ -187,13 +209,110 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
         const dt = new DataTransfer();
         dt.setData('text/plain', text);
         el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-      }, { el: composerEl, text: content });
+      }, { el: composerEl, text: fullContent });
       await sleep(2000);
+      injected = await checkInjected();
+      console.log(`[publisher] post=${postId} Text M2 injected=${injected}`);
     }
 
-    console.log(`[publisher] post=${postId} Text injected`);
-    // Give Lexical time to process and enable the Post button
+    // Method 3: File-based paste (text/plain File in DataTransfer)
+    if (!injected) {
+      console.warn(`[publisher] post=${postId} M2 failed — trying M3 file-based paste`);
+      await page.evaluate(({ el, text }) => {
+        el.focus();
+        document.execCommand('selectAll', false);
+        document.execCommand('delete', false);
+        const blob = new Blob([text], { type: 'text/plain' });
+        const file = new File([blob], 'post_text.txt', { type: 'text/plain' });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        dt.setData('text/plain', text);
+        el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      }, { el: composerEl, text: fullContent });
+      await sleep(2000);
+      injected = await checkInjected();
+      console.log(`[publisher] post=${postId} Text M3 injected=${injected}`);
+    }
+
+    // Method 4: char-by-char InputEvent dispatch (most reliable for Lexical newlines)
+    if (!injected) {
+      console.warn(`[publisher] post=${postId} M3 failed — trying M4 char-by-char InputEvent`);
+      await page.evaluate(async ({ el, text }) => {
+        el.focus();
+        document.execCommand('selectAll', false);
+        document.execCommand('delete', false);
+        await new Promise(r => setTimeout(r, 200));
+
+        for (let i = 0; i < text.length; i++) {
+          const char      = text[i];
+          const isNewline = char === '\n';
+          const key       = isNewline ? 'Enter' : char;
+          const keyCode   = isNewline ? 13 : char.charCodeAt(0);
+
+          el.dispatchEvent(new KeyboardEvent('keydown', {
+            key, code: isNewline ? 'Enter' : '', keyCode, which: keyCode,
+            bubbles: true, cancelable: true, composed: true,
+          }));
+          el.dispatchEvent(new InputEvent('beforeinput', {
+            inputType: isNewline ? 'insertParagraph' : 'insertText',
+            data: isNewline ? null : char,
+            bubbles: true, cancelable: true, composed: true,
+          }));
+          el.dispatchEvent(new InputEvent('input', {
+            inputType: isNewline ? 'insertParagraph' : 'insertText',
+            data: isNewline ? null : char,
+            bubbles: true, cancelable: false, composed: true,
+          }));
+          el.dispatchEvent(new KeyboardEvent('keyup', {
+            key, code: isNewline ? 'Enter' : '', keyCode, which: keyCode,
+            bubbles: true, cancelable: true, composed: true,
+          }));
+
+          if (i % 10 === 9) await new Promise(r => setTimeout(r, 20));
+        }
+      }, { el: composerEl, text: fullContent });
+      await sleep(2000);
+      injected = await checkInjected();
+      console.log(`[publisher] post=${postId} Text M4 injected=${injected}`);
+    }
+
+    if (!injected) {
+      throw new Error('Text injection failed — all 4 methods failed');
+    }
+
+    console.log(`[publisher] post=${postId} Text injection confirmed ✓`);
     await sleep(2000);
+
+    // ── 4a. Link preview hydration ────────────────────────────────────────
+    // After the URL is at the end of the text, press Space so Facebook
+    // detects it and renders a preview card.
+    if (linkUrl) {
+      console.log(`[publisher] post=${postId} Triggering link preview...`);
+      try {
+        await page.evaluate(el => {
+          el.focus();
+          const sel = window.getSelection();
+          if (sel && el.lastChild) {
+            sel.selectAllChildren(el);
+            sel.collapseToEnd();
+          }
+        }, composerEl);
+        await sleep(300);
+
+        await page.evaluate(el => {
+          const opts = { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true, composed: true };
+          el.dispatchEvent(new KeyboardEvent('keydown', opts));
+          document.execCommand('insertText', false, ' ');
+          el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: ' ', bubbles: true }));
+          el.dispatchEvent(new KeyboardEvent('keyup', opts));
+        }, composerEl);
+
+        await sleep(3000);
+        console.log(`[publisher] post=${postId} Link preview hydration done`);
+      } catch (e) {
+        console.warn(`[publisher] post=${postId} Link preview error: ${e.message}`);
+      }
+    }
 
     // ── 5. Upload images (mirrors extension STEP 3b) ──────────────────────
     if (imageUrls.length > 0) {
@@ -204,8 +323,6 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
       }
 
       try {
-        // Read downloaded images as base64 so we can pass them into page.evaluate()
-        // (File/Buffer objects can't cross the Node↔browser boundary directly)
         const imageData = await Promise.all(
           tmpFiles.map(async (p) => ({
             b64:  (await readFile(p)).toString('base64'),
@@ -215,7 +332,6 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
         );
 
         const imgResult = await page.evaluate(async (images) => {
-          // Build File objects from base64 data URIs
           const files = images.map(({ b64, name, mime }) => {
             const bin   = atob(b64);
             const bytes = new Uint8Array(bin.length);
@@ -238,7 +354,8 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
             return !!(
               dialog?.querySelector('img[src^="blob:"]') ||
               dialog?.querySelector('[data-visualcompletion="media-vc-image"]') ||
-              dialog?.querySelector('div[role="img"]')
+              dialog?.querySelector('div[role="img"]') ||
+              dialog?.querySelector('img[src]:not([src=""])')
             );
           }
 
@@ -256,14 +373,16 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
           // S2: drop event on dialog
           const dropTarget = dialog ?? composer;
           if (dropTarget) {
-            dropTarget.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }));
-            dropTarget.dispatchEvent(new DragEvent('dragover',  { dataTransfer: dt, bubbles: true }));
-            dropTarget.dispatchEvent(new DragEvent('drop',      { dataTransfer: dt, bubbles: true }));
+            dropTarget.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true, cancelable: true }));
+            await new Promise(r => setTimeout(r, 80));
+            dropTarget.dispatchEvent(new DragEvent('dragover',  { dataTransfer: dt, bubbles: true, cancelable: true }));
+            await new Promise(r => setTimeout(r, 80));
+            dropTarget.dispatchEvent(new DragEvent('drop',      { dataTransfer: dt, bubbles: true, cancelable: true }));
             await new Promise(r => setTimeout(r, 3000));
             if (hasPreview()) return 'S2-drop-ok';
           }
 
-          // S3: click photo toolbar button then assign to dialog-scoped file input
+          // S3: click photo toolbar button then look globally for file input
           const PHOTO_LABELS = ['תמונה/סרטון', 'Photo/video', 'Photo', 'תמונה', 'Add photos/videos'];
           const root = dialog ?? document;
           let photoBtn = null;
@@ -282,9 +401,20 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
             photoBtn.click();
             await new Promise(r => setTimeout(r, 1500));
           }
-          let fileInput = dialog?.querySelector('input[type="file"][accept*="image"]') ??
-                          dialog?.querySelector('input[type="file"]');
-          if (fileInput) { assignToFileInput(fileInput); await new Promise(r => setTimeout(r, 3000)); return 'S3-dialog-input-ok'; }
+
+          // After clicking photo button, scan the WHOLE document (not just dialog)
+          let fileInput =
+            document.querySelector('input[type="file"][accept*="image"]') ??
+            document.querySelector('input[type="file"]') ??
+            null;
+
+          if (fileInput) {
+            assignToFileInput(fileInput);
+            await new Promise(r => setTimeout(r, 3000));
+            // File inputs don't always produce a detectable preview; assume success
+            if (hasPreview()) return 'S3-dialog-input-ok (preview)';
+            return 'S3-dialog-input-ok (assumed)';
+          }
 
           // S4: global file input scan (most specific accept pattern first)
           const patterns = [
@@ -292,6 +422,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
             'input[type="file"][accept*="image/heic"]',
             'input[type="file"][accept^="image"]',
             'input[type="file"][accept*="image/"]',
+            'input[type="file"][accept*="video/"]',
             'input[type="file"]',
           ];
           for (const pat of patterns) {
@@ -309,7 +440,6 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
         console.log(`[publisher] post=${postId} Image inject: ${imgResult}`);
 
         if (imgResult !== 'no-input-found') {
-          // Extra wait for Facebook to process the upload
           const extraWait = Math.max(3000, tmpFiles.length * 2000);
           await sleep(extraWait);
           console.log(`[publisher] post=${postId} Images ready`);
