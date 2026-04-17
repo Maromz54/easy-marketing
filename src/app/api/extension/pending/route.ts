@@ -13,12 +13,15 @@ export async function GET(request: NextRequest) {
   const supabase = createServiceClient();
   const now = new Date().toISOString();
 
-  // Claim one due post atomically via UPDATE … RETURNING
+  // Claim one due PAGE post atomically via UPDATE … RETURNING.
+  // Group posts (facebook_token_id IS NULL + target_id IS NOT NULL) are handled
+  // exclusively by the VPS Playwright worker — do NOT serve them to the extension.
   const { data, error } = await supabase
     .from("posts")
     .update({ status: "processing" })
     .eq("status", "scheduled")
     .lte("scheduled_at", now)
+    .not("facebook_token_id", "is", null)
     .select("id, content, image_url, image_urls, link_url, target_id, recurrence_rule")
     .limit(1)
     .maybeSingle();
