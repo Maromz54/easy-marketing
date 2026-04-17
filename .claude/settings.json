@@ -11,7 +11,10 @@
       "Bash(wc -l \"/c/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/src/components/dashboard\"/*.tsx)",
       "Bash(find \"/c/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/src\" -name \"*.tsx\" -type f -exec wc -l {} \\\\;)",
       "Read(//c/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/**)",
-      "Bash(find src:*)"
+      "Bash(find src:*)",
+      "Bash(ssh -o StrictHostKeyChecking=no root@167.235.154.158 ' *)",
+      "Bash(SSH_ASKPASS=/tmp/ssh_pass.sh SSH_ASKPASS_REQUIRE=force ssh -o StrictHostKeyChecking=no root@167.235.154.158 \"ls -t /home/ubuntu/fb-errors/ | head -1\")",
+      "Bash(scp -o StrictHostKeyChecking=no '/c/Users/masga/OneDrive/שולחן העבודה/EasyMarketing/vps-worker/src/index.js' root@167.235.154.158:/home/ubuntu/vps-worker/src/)"
     ]
   }
 }

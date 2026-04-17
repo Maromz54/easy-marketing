@@ -15,7 +15,7 @@ import { sleep, randomBetween } from './utils.js';
 const MAX_RETRIES           = 2;
 const BASE_RETRY_DELAY_MS   = 90_000;        // backoff base: 90s → 180s → 360s
 const MIN_GROUP_GAP_MS      = 10 * 60_000;   // minimum 10 min between posts to the same group
-const POST_TIMEOUT_MS       = 60_000;        // kill a stuck publish attempt after 60 seconds
+const POST_TIMEOUT_MS       = 180_000;       // kill a stuck publish attempt after 180 seconds
 const BROWSER_RESTART_EVERY = 12;           // restart browser every N posts (memory leak prevention)
 
 // ── Timeout helper ────────────────────────────────────────────────────────────
@@ -109,14 +109,16 @@ async function main() {
           `(attempt ${post.retry_count + 1}/${MAX_RETRIES + 1}): ${lastError}`
         );
 
-        // Fatal errors — worker must stop, operator must intervene
+        // Fatal errors — mark post as failed first (prevents crash-loop re-queue), then stop
         if (lastError.includes('SESSION_EXPIRED')) {
           console.error('[worker] FATAL SESSION_EXPIRED — run "npm run setup" to re-login. Stopping.');
+          await markFailed(post.id, 'SESSION_EXPIRED — worker stopped, re-login required');
           await closeBrowser();
           process.exit(1);
         }
         if (lastError.includes('FACEBOOK_BLOCKED')) {
           console.error('[worker] FATAL FACEBOOK_BLOCKED — manual review required. Stopping.');
+          await markFailed(post.id, 'FACEBOOK_BLOCKED — manual review required');
           await closeBrowser();
           process.exit(2);
         }

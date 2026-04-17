@@ -13,12 +13,16 @@ const HEADLESS = false;
 
 // ── Selector strategies — ordered by reliability ─────────────────────────────
 // Facebook updates its HTML regularly; multiple fallbacks are critical.
+// Use aria-label/aria-placeholder — these match ONLY the compose trigger,
+// not post content that happens to contain the same text.
 const COMPOSE_SELECTORS = [
-  '[placeholder*="כאן כותבים"]',
-  '[placeholder*="Write something"]',
-  '[placeholder*="What\'s on your mind"]',
-  'div[role="button"]:has-text("כאן כותבים")',
-  'div[role="button"]:has-text("Write something")',
+  '[aria-label="כאן כותבים..."]',
+  '[aria-label="מה אתה חושב?"]',
+  '[aria-label="Write something..."]',
+  '[aria-label="What\'s on your mind?"]',
+  '[aria-placeholder="כאן כותבים..."]',
+  '[aria-placeholder="Write something..."]',
+  '[aria-placeholder="מה אתה חושב?"]',
 ];
 
 const EDITOR_SELECTORS = [
@@ -28,8 +32,10 @@ const EDITOR_SELECTORS = [
 ];
 
 const POST_BUTTON_SELECTORS = [
+  'div[aria-label="פרסום"]',
   'div[aria-label="פרסם"]',
   'div[aria-label="Post"]',
+  'div[role="button"]:has-text("פרסום")',
   'div[role="button"]:has-text("פרסם")',
   'div[role="button"]:has-text("Post")',
 ];
@@ -107,12 +113,17 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
     }
 
     // ── 1b. Session / block detection — content-based ─────────────────────
+    // Only match specific Facebook security/block phrases, NOT generic "blocked"
+    // which can appear in normal post content and cause false positives.
     const bodyText = await page.textContent('body').catch(() => '');
     if (
-      bodyText?.toLowerCase().includes('suspicious') ||
-      bodyText?.includes('אימות') ||
-      bodyText?.includes('security check') ||
-      bodyText?.toLowerCase().includes('blocked')
+      bodyText?.toLowerCase().includes('suspicious activity') ||
+      bodyText?.toLowerCase().includes('verify your identity') ||
+      bodyText?.toLowerCase().includes('your account has been') ||
+      bodyText?.toLowerCase().includes("you've been blocked") ||
+      bodyText?.toLowerCase().includes('security check') ||
+      bodyText?.includes('אימות זהות') ||
+      bodyText?.includes('בדיקת אבטחה')
     ) {
       throw new Error('FACEBOOK_BLOCKED');
     }
@@ -127,7 +138,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
     let clicked = false;
     for (const sel of COMPOSE_SELECTORS) {
       try {
-        await page.click(sel, { timeout: 6000 });
+        await page.click(sel, { timeout: 6000, force: true });
         clicked = true;
         console.log(`[publisher] post=${postId} Compose button clicked via: ${sel}`);
         break;
@@ -141,7 +152,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
     for (const sel of EDITOR_SELECTORS) {
       try {
         editorHandle = await page.waitForSelector(sel, { timeout: 6000 });
-        await editorHandle.click();
+        await editorHandle.click({ force: true });
         console.log(`[publisher] post=${postId} Editor focused via: ${sel}`);
         break;
       } catch {}
@@ -163,13 +174,18 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
       }));
     }, content);
 
-    // Verify text was inserted; fall back to human-like keyboard typing
+    // Verify text was inserted; fall back to fast line-by-line insertion
     await sleep(600);
     const editorText = await editorHandle.evaluate(el => el.textContent ?? '');
     if (!editorText.trim()) {
-      console.warn(`[publisher] post=${postId} Paste failed — falling back to keyboard.type()`);
+      console.warn(`[publisher] post=${postId} Paste failed — falling back to insertText+Enter`);
       await editorHandle.click();
-      await page.keyboard.type(content, { delay: randomBetween(35, 95) });
+      // insertText() is instant (no per-char delay); Enter key creates Lexical paragraph breaks
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i]) await page.keyboard.insertText(lines[i]);
+        if (i < lines.length - 1) await page.keyboard.press('Enter');
+      }
     }
 
     await sleep(randomBetween(800, 1500));
@@ -202,7 +218,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
     for (const sel of POST_BUTTON_SELECTORS) {
       try {
         const btn = await page.waitForSelector(sel, { timeout: 5000 });
-        await btn.click();
+        await btn.click({ force: true });
         posted = true;
         console.log(`[publisher] post=${postId} Post button clicked via: ${sel}`);
         break;
