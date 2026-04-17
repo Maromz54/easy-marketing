@@ -184,20 +184,50 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       }, { el: composerEl, text: fullContent, newlines: expectedNewlines });
     };
 
-    // Method 1: execCommand insertText + insertParagraph
-    await page.evaluate(({ el, text }) => {
-      el.focus();
-      document.execCommand('selectAll', false);
-      const lines = text.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i]) document.execCommand('insertText', false, lines[i]);
-        if (i < lines.length - 1) document.execCommand('insertParagraph', false);
-      }
-    }, { el: composerEl, text: fullContent });
+    // Method 0: Playwright-native keyboard (real user-gesture keystrokes)
+    // Uses CDP Input.insertText + real Enter keypress — Lexical treats this
+    // as genuine user input and creates a new <p> per line.
+    let injected = false;
+    try {
+      await composerEl.click();
+      await sleep(200);
+      await page.keyboard.press('Control+A');
+      await page.keyboard.press('Delete');
+      await sleep(150);
 
-    await sleep(500);
-    let injected = await checkInjected();
-    console.log(`[publisher] post=${postId} Text M1 injected=${injected}`);
+      const lines = fullContent.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].length > 0) {
+          await page.keyboard.insertText(lines[i]);
+        }
+        if (i < lines.length - 1) {
+          await page.keyboard.press('Enter');
+          await sleep(40);
+        }
+      }
+      await sleep(500);
+      injected = await checkInjected();
+      console.log(`[publisher] post=${postId} Text M0 injected=${injected}`);
+    } catch (e) {
+      console.warn(`[publisher] post=${postId} M0 failed: ${e.message}`);
+    }
+
+    // Method 1: execCommand insertText + insertParagraph (fallback)
+    if (!injected) {
+      console.warn(`[publisher] post=${postId} M0 failed — trying M1 execCommand`);
+      await page.evaluate(({ el, text }) => {
+        el.focus();
+        document.execCommand('selectAll', false);
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i]) document.execCommand('insertText', false, lines[i]);
+          if (i < lines.length - 1) document.execCommand('insertParagraph', false);
+        }
+      }, { el: composerEl, text: fullContent });
+      await sleep(500);
+      injected = await checkInjected();
+      console.log(`[publisher] post=${postId} Text M1 injected=${injected}`);
+    }
 
     // Method 2: DataTransfer setData paste
     if (!injected) {
@@ -322,7 +352,35 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
         tmpFiles.push(tmp);
       }
 
+      let imgStrategy = null;
+
+      // Strategy 0: Playwright-native setInputFiles (real user-gesture file picker)
       try {
+        const photoBtn = page.locator(
+          '[aria-label="תמונה/סרטון"], [aria-label="Photo/video"], ' +
+          '[aria-label="Photo"], [aria-label="תמונה"], [aria-label="Add photos/videos"]'
+        ).first();
+
+        if (await photoBtn.count() > 0) {
+          await photoBtn.click({ timeout: 3000 });
+          await sleep(1500);
+
+          // Facebook mounts several hidden file inputs; the one tied to the
+          // dialog is usually the last image-accepting input in the DOM.
+          const fileInput = page.locator('input[type="file"][accept*="image"]').last();
+          if (await fileInput.count() > 0) {
+            await fileInput.setInputFiles(tmpFiles);
+            await sleep(Math.max(3000, tmpFiles.length * 2000));
+            imgStrategy = 'S0-playwright-native';
+            console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+          }
+        }
+      } catch (e) {
+        console.warn(`[publisher] post=${postId} S0 failed: ${e.message}`);
+      }
+
+      // Strategies S1–S4 (JS event dispatch) — fallback only if S0 didn't run
+      if (!imgStrategy) try {
         const imageData = await Promise.all(
           tmpFiles.map(async (p) => ({
             b64:  (await readFile(p)).toString('base64'),
@@ -450,6 +508,24 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
         console.warn(`[publisher] post=${postId} Image upload error: ${imgErr.message}`);
       }
     }
+
+    // ── 5a. Pre-submit verification log ──────────────────────────────────
+    const verify = await page.evaluate(() => {
+      const dialog = document.querySelector('div[role="dialog"]');
+      const editor = dialog?.querySelector('[contenteditable="true"]');
+      return {
+        paragraphs: editor?.querySelectorAll('p').length ?? 0,
+        textLen:    (editor?.textContent ?? '').length,
+        hasImage:   !!(
+          dialog?.querySelector('img[src^="blob:"]') ||
+          dialog?.querySelector('[data-visualcompletion="media-vc-image"]')
+        ),
+      };
+    });
+    console.log(
+      `[publisher] post=${postId} Pre-submit: p=${verify.paragraphs} ` +
+      `len=${verify.textLen} img=${verify.hasImage}`
+    );
 
     // ── 6. Find and click Post button (mirrors extension STEP 4) ─────────
     const POST_LABELS = ['פרסום', 'פרסם', 'Post', 'שתף', 'Share'];
