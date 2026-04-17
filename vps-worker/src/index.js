@@ -15,7 +15,7 @@ import { sleep, randomBetween } from './utils.js';
 const MAX_RETRIES           = 2;
 const BASE_RETRY_DELAY_MS   = 90_000;        // backoff base: 90s → 180s → 360s
 const MIN_GROUP_GAP_MS      = 10 * 60_000;   // minimum 10 min between posts to the same group
-const POST_TIMEOUT_MS       = 180_000;       // kill a stuck publish attempt after 180 seconds
+const POST_TIMEOUT_MS       = 300_000;       // kill a stuck publish attempt after 5 minutes (12 images ~36s upload)
 const BROWSER_RESTART_EVERY = 12;           // restart browser every N posts (memory leak prevention)
 
 // ── Timeout helper ────────────────────────────────────────────────────────────

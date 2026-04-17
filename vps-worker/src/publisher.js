@@ -16,6 +16,7 @@ const HEADLESS = false;
 // Use aria-label/aria-placeholder — these match ONLY the compose trigger,
 // not post content that happens to contain the same text.
 const COMPOSE_SELECTORS = [
+  // aria-label — most specific, avoids false positives
   '[aria-label="כאן כותבים..."]',
   '[aria-label="מה אתה חושב?"]',
   '[aria-label="Write something..."]',
@@ -23,6 +24,12 @@ const COMPOSE_SELECTORS = [
   '[aria-placeholder="כאן כותבים..."]',
   '[aria-placeholder="Write something..."]',
   '[aria-placeholder="מה אתה חושב?"]',
+  // role="button" with exact placeholder text — page.click() uses first DOM match
+  // which is the compose area at the top of the page (above all posts)
+  'div[role="button"]:has-text("כאן כותבים")',
+  'div[role="button"]:has-text("מה אתה חושב")',
+  'div[role="button"]:has-text("Write something")',
+  'div[role="button"]:has-text("What\'s on your mind")',
 ];
 
 const EDITOR_SELECTORS = [
@@ -35,9 +42,15 @@ const POST_BUTTON_SELECTORS = [
   'div[aria-label="פרסום"]',
   'div[aria-label="פרסם"]',
   'div[aria-label="Post"]',
+  '[role="button"][aria-label="פרסום"]',
+  '[role="button"][aria-label="פרסם"]',
+  '[role="button"][aria-label="Post"]',
   'div[role="button"]:has-text("פרסום")',
   'div[role="button"]:has-text("פרסם")',
   'div[role="button"]:has-text("Post")',
+  'button:has-text("פרסום")',
+  'button:has-text("פרסם")',
+  'button:has-text("Post")',
 ];
 
 let _browser = null;
@@ -130,34 +143,95 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
 
     await sleep(randomBetween(2000, 4000));
 
-    // ── 1c. Human-like scroll before interacting ──────────────────────────
+    // ── 1c. Human-like scroll then return to top ─────────────────────────
+    // Facebook uses virtual scroll — scrolling past the compose area removes it
+    // from the DOM. Scroll down briefly for human-like behavior, then snap back.
     await page.mouse.wheel(0, randomBetween(300, 800));
-    await sleep(randomBetween(1000, 2000));
+    await sleep(randomBetween(800, 1500));
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await sleep(500);
+
+    // ── Diagnostic: save a pre-click screenshot and dump ALL short-text elements ──
+    try {
+      await page.screenshot({ path: `${ERRORS_DIR}/pre-click-${postId}.png`, fullPage: false });
+      console.log(`[publisher] post=${postId} Pre-click screenshot saved`);
+    } catch {}
+    const allShortElements = await page.evaluate(() => {
+      const result = [];
+      document.querySelectorAll('*').forEach(el => {
+        const own = Array.from(el.childNodes)
+          .filter(n => n.nodeType === 3)
+          .map(n => n.textContent.trim())
+          .join('');
+        const label = el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+        const text = (own || label).slice(0, 60).trim();
+        if (text.length > 2 && text.length < 60 && el.offsetWidth > 0 && el.getBoundingClientRect().top < 500) {
+          result.push({ tag: el.tagName, role: el.getAttribute('role'), text, y: Math.round(el.getBoundingClientRect().top) });
+        }
+      });
+      return result.slice(0, 30);
+    });
+    console.log(`[publisher] post=${postId} Page elements (top 500px):`, JSON.stringify(allShortElements));
 
     // ── 2. Click the compose trigger ─────────────────────────────────────
-    let clicked = false;
-    for (const sel of COMPOSE_SELECTORS) {
-      try {
-        await page.click(sel, { timeout: 6000, force: true });
-        clicked = true;
-        console.log(`[publisher] post=${postId} Compose button clicked via: ${sel}`);
-        break;
-      } catch {}
-    }
-    if (!clicked) throw new Error('Could not find compose button in group');
-    await sleep(randomBetween(1500, 2500));
-
-    // ── 3. Focus the Lexical editor ───────────────────────────────────────
+    // Some group layouts have the Lexical editor always open — try it first.
     let editorHandle = null;
     for (const sel of EDITOR_SELECTORS) {
       try {
-        editorHandle = await page.waitForSelector(sel, { timeout: 6000 });
+        editorHandle = await page.waitForSelector(sel, { timeout: 3000 });
         await editorHandle.click({ force: true });
-        console.log(`[publisher] post=${postId} Editor focused via: ${sel}`);
+        console.log(`[publisher] post=${postId} Editor already open, focused via: ${sel}`);
         break;
       } catch {}
     }
-    if (!editorHandle) throw new Error('Could not find composer editor');
+
+    if (!editorHandle) {
+      // Editor not open yet — need to click the compose trigger to open it
+      let clicked = false;
+      for (const sel of COMPOSE_SELECTORS) {
+        try {
+          await page.click(sel, { timeout: 6000, force: true });
+          clicked = true;
+          console.log(`[publisher] post=${postId} Compose button clicked via: ${sel}`);
+          break;
+        } catch {}
+      }
+
+      // Last-resort JS: click ANY element whose direct text starts with a Hebrew/English compose phrase
+      if (!clicked) {
+        const jsClicked = await page.evaluate(() => {
+          const phrases = ['כאן כותבים', 'מה אתה חושב', 'מה ברצונך', 'Write something', "What's on your mind", 'שתף משהו', 'כתוב משהו'];
+          for (const el of document.querySelectorAll('*')) {
+            const own = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('');
+            const label = el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+            const text = (own || label).trim();
+            if (text.length > 0 && text.length < 80 && phrases.some(p => text.startsWith(p))) {
+              el.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (jsClicked) {
+          clicked = true;
+          console.log(`[publisher] post=${postId} Compose button clicked via broad JS search`);
+        }
+      }
+
+      if (!clicked) throw new Error('Could not find compose button in group');
+      await sleep(randomBetween(1500, 2500));
+
+      // ── 3. Focus the Lexical editor ───────────────────────────────────────
+      for (const sel of EDITOR_SELECTORS) {
+        try {
+          editorHandle = await page.waitForSelector(sel, { timeout: 6000 });
+          await editorHandle.click({ force: true });
+          console.log(`[publisher] post=${postId} Editor focused via: ${sel}`);
+          break;
+        } catch {}
+      }
+      if (!editorHandle) throw new Error('Could not find composer editor');
+    }
     await sleep(randomBetween(500, 1000));
 
     // ── 4. Insert text ────────────────────────────────────────────────────
@@ -206,7 +280,10 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
         await sleep(1000);
         const fileInput = await page.waitForSelector('input[type="file"]', { timeout: 6000 });
         await fileInput.setInputFiles(tmpFiles);
-        await sleep(randomBetween(2000, 4000));
+        // Wait for upload: ~3s per image, minimum 5s
+        const uploadWait = Math.max(5000, tmpFiles.length * 3000);
+        console.log(`[publisher] post=${postId} Waiting ${Math.round(uploadWait/1000)}s for ${tmpFiles.length} image(s) to upload`);
+        await sleep(uploadWait);
         console.log(`[publisher] post=${postId} Images uploaded`);
       } catch (imgErr) {
         console.warn(`[publisher] post=${postId} Image upload skipped: ${imgErr.message}`);
@@ -217,7 +294,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
     let posted = false;
     for (const sel of POST_BUTTON_SELECTORS) {
       try {
-        const btn = await page.waitForSelector(sel, { timeout: 5000 });
+        const btn = await page.waitForSelector(sel, { timeout: 30_000 });
         await btn.click({ force: true });
         posted = true;
         console.log(`[publisher] post=${postId} Post button clicked via: ${sel}`);
