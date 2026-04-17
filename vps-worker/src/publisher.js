@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
-import { mkdir } from 'fs/promises';
+import { mkdir, readFile } from 'fs/promises';
+import path from 'path';
 import { sleep, randomBetween, downloadImage, cleanup } from './utils.js';
 
 const SESSION_DIR = '/home/ubuntu/fb-session';
@@ -203,56 +204,117 @@ export async function postToGroup(postId, groupId, content, imageUrls = []) {
       }
 
       try {
-        // Click the photo toolbar button (same as extension S-IMG-3)
-        const photoBtnLabel = await page.evaluate(() => {
+        // Read downloaded images as base64 so we can pass them into page.evaluate()
+        // (File/Buffer objects can't cross the Node↔browser boundary directly)
+        const imageData = await Promise.all(
+          tmpFiles.map(async (p) => ({
+            b64:  (await readFile(p)).toString('base64'),
+            name: path.basename(p),
+            mime: p.endsWith('.png') ? 'image/png' : p.endsWith('.gif') ? 'image/gif' : 'image/jpeg',
+          }))
+        );
+
+        const imgResult = await page.evaluate(async (images) => {
+          // Build File objects from base64 data URIs
+          const files = images.map(({ b64, name, mime }) => {
+            const bin   = atob(b64);
+            const bytes = new Uint8Array(bin.length);
+            for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+            return new File([new Blob([bytes], { type: mime })], name, { type: mime });
+          });
+          const dt = new DataTransfer();
+          files.forEach(f => dt.items.add(f));
+
+          const dialog   = document.querySelector('div[role="dialog"]');
+          const composer = dialog?.querySelector('[contenteditable="true"]');
+
+          function assignToFileInput(input) {
+            Object.defineProperty(input, 'files', { value: dt.files, configurable: true });
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new Event('input',  { bubbles: true }));
+          }
+
+          function hasPreview() {
+            return !!(
+              dialog?.querySelector('img[src^="blob:"]') ||
+              dialog?.querySelector('[data-visualcompletion="media-vc-image"]') ||
+              dialog?.querySelector('div[role="img"]')
+            );
+          }
+
+          // S1: paste event on the Lexical editor
+          if (composer) {
+            composer.focus();
+            await new Promise(r => setTimeout(r, 150));
+            composer.dispatchEvent(new ClipboardEvent('paste', {
+              bubbles: true, cancelable: true, clipboardData: dt,
+            }));
+            await new Promise(r => setTimeout(r, 3000));
+            if (hasPreview()) return 'S1-paste-ok';
+          }
+
+          // S2: drop event on dialog
+          const dropTarget = dialog ?? composer;
+          if (dropTarget) {
+            dropTarget.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }));
+            dropTarget.dispatchEvent(new DragEvent('dragover',  { dataTransfer: dt, bubbles: true }));
+            dropTarget.dispatchEvent(new DragEvent('drop',      { dataTransfer: dt, bubbles: true }));
+            await new Promise(r => setTimeout(r, 3000));
+            if (hasPreview()) return 'S2-drop-ok';
+          }
+
+          // S3: click photo toolbar button then assign to dialog-scoped file input
           const PHOTO_LABELS = ['תמונה/סרטון', 'Photo/video', 'Photo', 'תמונה', 'Add photos/videos'];
-          const dialog = document.querySelector('div[role="dialog"]');
-          const root   = dialog ?? document;
-          for (const label of PHOTO_LABELS) {
-            const el = root.querySelector(`[aria-label="${label}"]`);
-            if (el) { el.click(); return label; }
+          const root = dialog ?? document;
+          let photoBtn = null;
+          for (const lbl of PHOTO_LABELS) {
+            photoBtn = root.querySelector(`[aria-label="${lbl}"]`);
+            if (photoBtn) break;
           }
-          for (const el of root.querySelectorAll('[role="button"]')) {
-            const txt = (el.textContent ?? '').trim();
-            if (PHOTO_LABELS.some(l => txt.includes(l))) { el.click(); return txt; }
+          if (!photoBtn) {
+            for (const el of root.querySelectorAll('[role="button"]')) {
+              if (PHOTO_LABELS.some(l => (el.textContent ?? '').trim().includes(l))) {
+                photoBtn = el; break;
+              }
+            }
           }
-          return null;
-        });
-        if (photoBtnLabel) {
-          console.log(`[publisher] post=${postId} Photo button clicked: ${photoBtnLabel}`);
-          await sleep(1500);
-        }
+          if (photoBtn) {
+            photoBtn.click();
+            await new Promise(r => setTimeout(r, 1500));
+          }
+          let fileInput = dialog?.querySelector('input[type="file"][accept*="image"]') ??
+                          dialog?.querySelector('input[type="file"]');
+          if (fileInput) { assignToFileInput(fileInput); await new Promise(r => setTimeout(r, 3000)); return 'S3-dialog-input-ok'; }
 
-        // Find file input — try most specific accept patterns first (S-IMG-4 order)
-        // state:'attached' works on hidden inputs (Facebook keeps inputs hidden in the DOM)
-        const FB_PATTERNS = [
-          'input[type="file"][accept="image/*,image/heif,image/heic"]',
-          'input[type="file"][accept*="image/heic"]',
-          'input[type="file"][accept^="image"]',
-          'input[type="file"][accept*="image/"]',
-          'input[type="file"]',
-        ];
+          // S4: global file input scan (most specific accept pattern first)
+          const patterns = [
+            'input[type="file"][accept="image/*,image/heif,image/heic"]',
+            'input[type="file"][accept*="image/heic"]',
+            'input[type="file"][accept^="image"]',
+            'input[type="file"][accept*="image/"]',
+            'input[type="file"]',
+          ];
+          for (const pat of patterns) {
+            const inputs = [...document.querySelectorAll(pat)];
+            if (inputs.length > 0) {
+              const inp = inputs.find(el => el.files?.length === 0) ?? inputs[0];
+              assignToFileInput(inp);
+              await new Promise(r => setTimeout(r, 3000));
+              return `S4-global-ok (${pat})`;
+            }
+          }
+          return 'no-input-found';
+        }, imageData);
 
-        let uploaded = false;
-        for (const pattern of FB_PATTERNS) {
-          try {
-            const count = await page.locator(pattern).count();
-            if (count === 0) continue;
-            const input = page.locator(pattern).first();
-            await input.setInputFiles(tmpFiles);
-            uploaded = true;
-            console.log(`[publisher] post=${postId} Files set via: ${pattern}`);
-            break;
-          } catch {}
-        }
+        console.log(`[publisher] post=${postId} Image inject: ${imgResult}`);
 
-        if (uploaded) {
-          const uploadWait = Math.max(5000, tmpFiles.length * 3000);
-          console.log(`[publisher] post=${postId} Waiting ${Math.round(uploadWait / 1000)}s for upload`);
-          await sleep(uploadWait);
-          console.log(`[publisher] post=${postId} Upload complete`);
+        if (imgResult !== 'no-input-found') {
+          // Extra wait for Facebook to process the upload
+          const extraWait = Math.max(3000, tmpFiles.length * 2000);
+          await sleep(extraWait);
+          console.log(`[publisher] post=${postId} Images ready`);
         } else {
-          console.warn(`[publisher] post=${postId} No file input found — images skipped`);
+          console.warn(`[publisher] post=${postId} All image strategies failed`);
         }
       } catch (imgErr) {
         console.warn(`[publisher] post=${postId} Image upload error: ${imgErr.message}`);
