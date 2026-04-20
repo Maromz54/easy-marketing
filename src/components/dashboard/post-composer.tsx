@@ -7,8 +7,9 @@ import { z } from "zod";
 import {
   Loader2, Send, CalendarClock, Image as ImageIcon,
   Link2, CheckCircle2, Target, Puzzle, ListChecks, Pencil, X, Upload, RefreshCw,
-  Shuffle, Bell, GripVertical, ChevronLeft, ChevronRight,
+  Shuffle, Bell, GripVertical, ChevronLeft, ChevronRight, Smile,
 } from "lucide-react";
+import EmojiPicker, { type EmojiClickData } from "emoji-picker-react";
 
 import { createPostAction, updatePostAction, saveAsTemplateAction } from "@/actions/posts";
 import { hasSpintax } from "@/utils/spintax";
@@ -167,6 +168,38 @@ export function PostComposer({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Emoji picker
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showEmojiPicker) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target as Node)) {
+        setShowEmojiPicker(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showEmojiPicker]);
+
+  function insertEmoji(emojiData: EmojiClickData) {
+    const textarea = textareaRef.current;
+    const emoji = emojiData.emoji;
+    const start = textarea?.selectionStart ?? form.getValues("content").length;
+    const end = textarea?.selectionEnd ?? start;
+    const current = form.getValues("content");
+    form.setValue("content", current.slice(0, start) + emoji + current.slice(end), {
+      shouldValidate: true,
+    });
+    setShowEmojiPicker(false);
+    requestAnimationFrame(() => {
+      textarea?.focus();
+      textarea?.setSelectionRange(start + emoji.length, start + emoji.length);
+    });
+  }
 
   const form = useForm<PostFormValues>({
     resolver: zodResolver(postSchema),
@@ -759,13 +792,39 @@ export function PostComposer({
                   <FormItem>
                     <div className="flex items-center justify-between">
                       <FormLabel>תוכן הפוסט</FormLabel>
-                      <span
-                        className={`text-xs tabular-nums ${
-                          contentLength > 60000 ? "text-destructive" : "text-muted-foreground"
-                        }`}
-                      >
-                        {contentLength.toLocaleString("he-IL")} / 63,206
-                      </span>
+                      <div className="flex items-center gap-2">
+                        {/* Emoji picker trigger */}
+                        <div className="relative" ref={emojiPickerRef}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            aria-label="הוסף אימוגי"
+                            title="הוסף אימוגי"
+                            onClick={() => setShowEmojiPicker((v) => !v)}
+                            className="h-7 w-7 p-0 text-slate-400 hover:text-amber-500 rounded-lg"
+                          >
+                            <Smile className="h-4 w-4" />
+                          </Button>
+                          {showEmojiPicker && (
+                            <div className="absolute end-0 top-8 z-50 shadow-xl rounded-xl overflow-hidden">
+                              <EmojiPicker
+                                onEmojiClick={insertEmoji}
+                                searchPlaceHolder="חפש אימוגי..."
+                                height={350}
+                                width={300}
+                              />
+                            </div>
+                          )}
+                        </div>
+                        <span
+                          className={`text-xs tabular-nums ${
+                            contentLength > 60000 ? "text-destructive" : "text-muted-foreground"
+                          }`}
+                        >
+                          {contentLength.toLocaleString("he-IL")} / 63,206
+                        </span>
+                      </div>
                     </div>
                     <FormControl>
                       <Textarea
@@ -773,6 +832,10 @@ export function PostComposer({
                         className="min-h-[140px]"
                         dir="rtl"
                         {...field}
+                        ref={(el) => {
+                          textareaRef.current = el;
+                          field.ref(el);
+                        }}
                       />
                     </FormControl>
                     {/* Spintax hint & live indicator */}
