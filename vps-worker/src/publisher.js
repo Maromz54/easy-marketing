@@ -502,7 +502,6 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       } catch (imgErr) {
         console.warn(`[publisher] post=${postId} Image upload error: ${imgErr.message}`);
       }
-    }
 
     // ── 5a. Pre-submit verification log ──────────────────────────────────
     const verify = await page.evaluate(() => {
