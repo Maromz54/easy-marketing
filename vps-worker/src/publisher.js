@@ -1,6 +1,5 @@
 import { chromium } from 'playwright';
-import { mkdir, readFile } from 'fs/promises';
-import path from 'path';
+import { mkdir } from 'fs/promises';
 import { sleep, randomBetween, downloadImage, cleanup } from './utils.js';
 
 const SESSION_DIR = '/home/ubuntu/fb-session';
@@ -168,56 +167,78 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
 
       let imgStrategy = null;
 
-      // S0-a: Try setInputFiles on an already-existing hidden file input
-      // (Facebook often pre-mounts one in the DOM before any button click)
+      // Check if a photo preview appeared inside the dialog
+      const hasImagePreview = async () => page.evaluate(() => {
+        const d = document.querySelector('div[role="dialog"]');
+        return !!(
+          d?.querySelector('img[src^="blob:"]') ||
+          d?.querySelector('[data-visualcompletion="media-vc-image"]') ||
+          d?.querySelector('div[role="img"]')
+        );
+      });
+
+      // S0: Click photo button → catch native filechooser (most reliable)
       try {
-        const existingInput = page.locator('input[type="file"][accept*="image"]').last();
-        if (await existingInput.count() > 0) {
-          await existingInput.setInputFiles(tmpFiles);
-          await sleep(Math.max(4000, tmpFiles.length * 2000));
-          imgStrategy = 'S0a-direct-input';
-          console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+        // Find the photo/video toolbar button inside the dialog
+        const PHOTO_LABELS = [
+          '[aria-label="תמונה/סרטון"]', '[aria-label="Photo/video"]',
+          '[aria-label="Photo"]',        '[aria-label="תמונה"]',
+          '[aria-label="Add photos/videos"]', '[aria-label="הוסף תמונה"]',
+        ];
+        let photoBtn = page.locator(PHOTO_LABELS.join(', ')).first();
+        let photoBtnReady = await photoBtn.count() > 0;
+
+        if (!photoBtnReady) {
+          // Broader search: any dialog button whose aria-label mentions photo/image
+          const found = await page.evaluate(() => {
+            const dialog = document.querySelector('div[role="dialog"]');
+            for (const btn of dialog?.querySelectorAll('[role="button"]') ?? []) {
+              if (/תמונ|photo|image|media/i.test(btn.getAttribute('aria-label') ?? '')) {
+                btn.click();
+                return true;
+              }
+            }
+            return false;
+          });
+          if (found) {
+            await sleep(1500);
+            const fileInput = page.locator('input[type="file"]').last();
+            if (await fileInput.count() > 0) {
+              await fileInput.setInputFiles(tmpFiles);
+              await sleep(Math.max(4000, tmpFiles.length * 2000));
+              if (await hasImagePreview()) {
+                imgStrategy = 'S0-broad-btn';
+                console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+              }
+            }
+          }
+        } else {
+          // Set up filechooser listener BEFORE clicking (intercepts native OS file dialog)
+          const chooserPromise = page.waitForEvent('filechooser', { timeout: 6000 }).catch(() => null);
+          await photoBtn.click({ timeout: 4000 });
+          const chooser = await chooserPromise;
+
+          if (chooser) {
+            await chooser.setFiles(tmpFiles);
+            await sleep(Math.max(4000, tmpFiles.length * 2000));
+            imgStrategy = 'S0-filechooser';
+            console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+          } else {
+            // No native dialog — try setInputFiles on the activated hidden input
+            await sleep(500);
+            const fileInput = page.locator('input[type="file"]').last();
+            if (await fileInput.count() > 0) {
+              await fileInput.setInputFiles(tmpFiles);
+              await sleep(Math.max(4000, tmpFiles.length * 2000));
+              if (await hasImagePreview()) {
+                imgStrategy = 'S0-setInputFiles';
+                console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+              }
+            }
+          }
         }
       } catch (e) {
-        console.warn(`[publisher] post=${postId} S0a failed: ${e.message}`);
-      }
-
-      // S0-b: Click photo button (composer still empty → no text lost), then setInputFiles
-      if (!imgStrategy) {
-        try {
-          const PHOTO_LABELS = [
-            '[aria-label="תמונה/סרטון"]', '[aria-label="Photo/video"]',
-            '[aria-label="Photo"]',        '[aria-label="תמונה"]',
-            '[aria-label="Add photos/videos"]',
-          ];
-          const photoBtn = page.locator(PHOTO_LABELS.join(', ')).first();
-
-          if (await photoBtn.count() > 0) {
-            await photoBtn.click({ timeout: 4000 });
-            await sleep(1500);
-          } else {
-            // Broader fallback: any SVG-icon button in the dialog toolbar
-            await page.evaluate(() => {
-              const dialog = document.querySelector('div[role="dialog"]');
-              const toolbar = dialog?.querySelectorAll('[role="button"]') ?? [];
-              for (const btn of toolbar) {
-                const lbl = btn.getAttribute('aria-label') ?? '';
-                if (/תמונ|photo|image|media/i.test(lbl)) { btn.click(); return; }
-              }
-            });
-            await sleep(1500);
-          }
-
-          const fileInput = page.locator('input[type="file"]').last();
-          if (await fileInput.count() > 0) {
-            await fileInput.setInputFiles(tmpFiles);
-            await sleep(Math.max(4000, tmpFiles.length * 2000));
-            imgStrategy = 'S0b-after-photo-btn';
-            console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
-          }
-        } catch (e) {
-          console.warn(`[publisher] post=${postId} S0b failed: ${e.message}`);
-        }
+        console.warn(`[publisher] post=${postId} S0 failed: ${e.message}`);
       }
 
       if (!imgStrategy) {
@@ -255,16 +276,34 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     // Helper: check that text AND line breaks were injected into Lexical.
     const expectedNewlines = (fullContent.match(/\n/g) ?? []).length;
 
+    // Selector string reused for fresh locator queries (avoids stale ElementHandle)
+    const DIALOG_COMPOSER_SEL = [
+      'div[role="dialog"] div[role="textbox"][contenteditable="true"]',
+      'div[role="dialog"] div[data-lexical-editor="true"]',
+      'div[role="dialog"] div[contenteditable="true"][spellcheck="true"]',
+      'div[role="dialog"] div[contenteditable="true"]',
+    ].join(', ');
+
+    // Check injection by text length only — paragraph structure varies across Lexical versions.
+    // Log paragraph count separately for diagnostics without using it as a gate.
     const checkInjected = async () => {
-      return page.evaluate(({ el, text, newlines }) => {
-        const composerText = el.textContent ?? '';
-        if (!composerText.includes(text.slice(0, 15).replace(/\n/g, ''))) return false;
-        if (newlines > 0) {
-          const paragraphCount = el.querySelectorAll('p').length;
-          return paragraphCount > 1;
-        }
-        return true;
-      }, { el: composerEl, text: fullContent, newlines: expectedNewlines });
+      return page.evaluate(({ el, text }) => {
+        const composerText = (el.textContent ?? '').replace(/\s/g, '');
+        const expectedText = text.replace(/\s/g, '');
+        return composerText.length >= expectedText.length * 0.8;
+      }, { el: composerEl, text: fullContent });
+    };
+
+    // Clear the editor before each fallback to prevent text duplication.
+    // Uses a fresh locator (not the cached ElementHandle) to avoid stale-handle failures.
+    const clearEditor = async () => {
+      try {
+        await page.locator(DIALOG_COMPOSER_SEL).first().click({ timeout: 2000 });
+        await sleep(100);
+        await page.keyboard.press('Control+A');
+        await page.keyboard.press('Delete');
+        await sleep(200);
+      } catch {}
     };
 
     // Method 0: Playwright-native keyboard (real CDP keystrokes — Lexical treats as user input)
@@ -295,6 +334,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
 
     // Method 1: execCommand (fallback)
     if (!injected) {
+      await clearEditor();
       await page.evaluate(({ el, text }) => {
         el.focus();
         document.execCommand('selectAll', false);
@@ -311,6 +351,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
 
     // Method 2: DataTransfer paste (fallback)
     if (!injected) {
+      await clearEditor();
       await page.evaluate(({ el, text }) => {
         el.focus();
         document.execCommand('selectAll', false);
@@ -326,6 +367,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
 
     // Method 3: char-by-char InputEvent (last resort)
     if (!injected) {
+      await clearEditor();
       await page.evaluate(async ({ el, text }) => {
         el.focus();
         document.execCommand('selectAll', false);
@@ -353,155 +395,19 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     // ── 6a. Link preview hydration ────────────────────────────────────────
     if (linkUrl) {
       try {
-        await page.evaluate(el => {
-          el.focus();
-          const sel = window.getSelection();
-          if (sel && el.lastChild) { sel.selectAllChildren(el); sel.collapseToEnd(); }
-        }, composerEl);
+        // Re-query the composer with a fresh locator — composerEl may be stale after typing
+        const freshComposer = page.locator(DIALOG_COMPOSER_SEL).first();
+        await freshComposer.click({ timeout: 3000 });
         await sleep(300);
-        await page.evaluate(el => {
-          const opts = { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true, composed: true };
-          el.dispatchEvent(new KeyboardEvent('keydown', opts));
-          document.execCommand('insertText', false, ' ');
-          el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: ' ', bubbles: true }));
-          el.dispatchEvent(new KeyboardEvent('keyup', opts));
-        }, composerEl);
+        // Move caret to end, then press Space to trigger Facebook's URL-detection
+        await page.keyboard.press('End');
+        await page.keyboard.type(' ');
         await sleep(3000);
         console.log(`[publisher] post=${postId} Link preview hydration done`);
       } catch (e) {
         console.warn(`[publisher] post=${postId} Link preview error: ${e.message}`);
       }
     }
-
-    // (no more image upload section — moved to step 4 above)
-    // Strategies S1–S4 (JS event dispatch) — legacy, kept for reference only
-    if (false) try {
-        const imageData = await Promise.all(
-          tmpFiles.map(async (p) => ({
-            b64:  (await readFile(p)).toString('base64'),
-            name: path.basename(p),
-            mime: p.endsWith('.png') ? 'image/png' : p.endsWith('.gif') ? 'image/gif' : 'image/jpeg',
-          }))
-        );
-
-        const imgResult = await page.evaluate(async (images) => {
-          const files = images.map(({ b64, name, mime }) => {
-            const bin   = atob(b64);
-            const bytes = new Uint8Array(bin.length);
-            for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
-            return new File([new Blob([bytes], { type: mime })], name, { type: mime });
-          });
-          const dt = new DataTransfer();
-          files.forEach(f => dt.items.add(f));
-
-          const dialog   = document.querySelector('div[role="dialog"]');
-          const composer = dialog?.querySelector('[contenteditable="true"]');
-
-          function assignToFileInput(input) {
-            Object.defineProperty(input, 'files', { value: dt.files, configurable: true });
-            input.dispatchEvent(new Event('change', { bubbles: true }));
-            input.dispatchEvent(new Event('input',  { bubbles: true }));
-          }
-
-          function hasPreview() {
-            return !!(
-              dialog?.querySelector('img[src^="blob:"]') ||
-              dialog?.querySelector('[data-visualcompletion="media-vc-image"]') ||
-              dialog?.querySelector('div[role="img"]') ||
-              dialog?.querySelector('img[src]:not([src=""])')
-            );
-          }
-
-          // S1: paste event on the Lexical editor
-          if (composer) {
-            composer.focus();
-            await new Promise(r => setTimeout(r, 150));
-            composer.dispatchEvent(new ClipboardEvent('paste', {
-              bubbles: true, cancelable: true, clipboardData: dt,
-            }));
-            await new Promise(r => setTimeout(r, 3000));
-            if (hasPreview()) return 'S1-paste-ok';
-          }
-
-          // S2: drop event on dialog
-          const dropTarget = dialog ?? composer;
-          if (dropTarget) {
-            dropTarget.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true, cancelable: true }));
-            await new Promise(r => setTimeout(r, 80));
-            dropTarget.dispatchEvent(new DragEvent('dragover',  { dataTransfer: dt, bubbles: true, cancelable: true }));
-            await new Promise(r => setTimeout(r, 80));
-            dropTarget.dispatchEvent(new DragEvent('drop',      { dataTransfer: dt, bubbles: true, cancelable: true }));
-            await new Promise(r => setTimeout(r, 3000));
-            if (hasPreview()) return 'S2-drop-ok';
-          }
-
-          // S3: click photo toolbar button then look globally for file input
-          const PHOTO_LABELS = ['תמונה/סרטון', 'Photo/video', 'Photo', 'תמונה', 'Add photos/videos'];
-          const root = dialog ?? document;
-          let photoBtn = null;
-          for (const lbl of PHOTO_LABELS) {
-            photoBtn = root.querySelector(`[aria-label="${lbl}"]`);
-            if (photoBtn) break;
-          }
-          if (!photoBtn) {
-            for (const el of root.querySelectorAll('[role="button"]')) {
-              if (PHOTO_LABELS.some(l => (el.textContent ?? '').trim().includes(l))) {
-                photoBtn = el; break;
-              }
-            }
-          }
-          if (photoBtn) {
-            photoBtn.click();
-            await new Promise(r => setTimeout(r, 1500));
-          }
-
-          // After clicking photo button, scan the WHOLE document (not just dialog)
-          let fileInput =
-            document.querySelector('input[type="file"][accept*="image"]') ??
-            document.querySelector('input[type="file"]') ??
-            null;
-
-          if (fileInput) {
-            assignToFileInput(fileInput);
-            await new Promise(r => setTimeout(r, 3000));
-            // File inputs don't always produce a detectable preview; assume success
-            if (hasPreview()) return 'S3-dialog-input-ok (preview)';
-            return 'S3-dialog-input-ok (assumed)';
-          }
-
-          // S4: global file input scan (most specific accept pattern first)
-          const patterns = [
-            'input[type="file"][accept="image/*,image/heif,image/heic"]',
-            'input[type="file"][accept*="image/heic"]',
-            'input[type="file"][accept^="image"]',
-            'input[type="file"][accept*="image/"]',
-            'input[type="file"][accept*="video/"]',
-            'input[type="file"]',
-          ];
-          for (const pat of patterns) {
-            const inputs = [...document.querySelectorAll(pat)];
-            if (inputs.length > 0) {
-              const inp = inputs.find(el => el.files?.length === 0) ?? inputs[0];
-              assignToFileInput(inp);
-              await new Promise(r => setTimeout(r, 3000));
-              return `S4-global-ok (${pat})`;
-            }
-          }
-          return 'no-input-found';
-        }, imageData);
-
-        console.log(`[publisher] post=${postId} Image inject: ${imgResult}`);
-
-        if (imgResult !== 'no-input-found') {
-          const extraWait = Math.max(3000, tmpFiles.length * 2000);
-          await sleep(extraWait);
-          console.log(`[publisher] post=${postId} Images ready`);
-        } else {
-          console.warn(`[publisher] post=${postId} All image strategies failed`);
-        }
-      } catch (imgErr) {
-        console.warn(`[publisher] post=${postId} Image upload error: ${imgErr.message}`);
-      }
 
     // ── 5a. Pre-submit verification log ──────────────────────────────────
     const verify = await page.evaluate(() => {
@@ -584,17 +490,14 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
           }
         }
 
-        // S4: bottom-right positional (last enabled button in dialog)
+        // S4: lowest button in dialog (Post button is always at the bottom; sort by bottom desc)
         if (dialog) {
           const cands = [...dialog.querySelectorAll('[role="button"]')]
             .filter(el => {
               const r = el.getBoundingClientRect();
-              return r.width >= 30 && r.height >= 20 && el.getAttribute('aria-disabled') !== 'true';
+              return r.width >= 40 && r.height >= 24 && el.getAttribute('aria-disabled') !== 'true';
             })
-            .sort((a, b) => {
-              const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-              return (rb.bottom + rb.right) - (ra.bottom + ra.right);
-            });
+            .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
           if (cands[0]) {
             cands[0].scrollIntoView({ block: 'center', behavior: 'instant' });
             humanClick(cands[0]);
