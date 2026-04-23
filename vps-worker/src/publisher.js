@@ -156,20 +156,103 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     }
     if (!composerEl) throw new Error('Could not find composer editor in dialog');
 
-    // Focus the editor with mouse events (same as extension)
-    await page.evaluate(el => {
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-      el.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
-      el.dispatchEvent(new MouseEvent('click',     { bubbles: true, cancelable: true }));
-      el.focus();
-    }, composerEl);
-    await sleep(400);
+    // ── 4. Upload images FIRST (before text injection) ───────────────────
+    // CRITICAL: Clicking the photo button resets the Lexical editor content.
+    // By uploading images on the empty composer first, we avoid losing text.
+    if (imageUrls.length > 0) {
+      console.log(`[publisher] post=${postId} Downloading ${imageUrls.length} image(s)`);
+      for (const url of imageUrls) {
+        const tmp = await downloadImage(url);
+        tmpFiles.push(tmp);
+      }
 
-    // ── 4. Inject text (4-method approach mirroring extension) ────────────
+      let imgStrategy = null;
+
+      // S0-a: Try setInputFiles on an already-existing hidden file input
+      // (Facebook often pre-mounts one in the DOM before any button click)
+      try {
+        const existingInput = page.locator('input[type="file"][accept*="image"]').last();
+        if (await existingInput.count() > 0) {
+          await existingInput.setInputFiles(tmpFiles);
+          await sleep(Math.max(4000, tmpFiles.length * 2000));
+          imgStrategy = 'S0a-direct-input';
+          console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+        }
+      } catch (e) {
+        console.warn(`[publisher] post=${postId} S0a failed: ${e.message}`);
+      }
+
+      // S0-b: Click photo button (composer still empty → no text lost), then setInputFiles
+      if (!imgStrategy) {
+        try {
+          const PHOTO_LABELS = [
+            '[aria-label="תמונה/סרטון"]', '[aria-label="Photo/video"]',
+            '[aria-label="Photo"]',        '[aria-label="תמונה"]',
+            '[aria-label="Add photos/videos"]',
+          ];
+          const photoBtn = page.locator(PHOTO_LABELS.join(', ')).first();
+
+          if (await photoBtn.count() > 0) {
+            await photoBtn.click({ timeout: 4000 });
+            await sleep(1500);
+          } else {
+            // Broader fallback: any SVG-icon button in the dialog toolbar
+            await page.evaluate(() => {
+              const dialog = document.querySelector('div[role="dialog"]');
+              const toolbar = dialog?.querySelectorAll('[role="button"]') ?? [];
+              for (const btn of toolbar) {
+                const lbl = btn.getAttribute('aria-label') ?? '';
+                if (/תמונ|photo|image|media/i.test(lbl)) { btn.click(); return; }
+              }
+            });
+            await sleep(1500);
+          }
+
+          const fileInput = page.locator('input[type="file"]').last();
+          if (await fileInput.count() > 0) {
+            await fileInput.setInputFiles(tmpFiles);
+            await sleep(Math.max(4000, tmpFiles.length * 2000));
+            imgStrategy = 'S0b-after-photo-btn';
+            console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+          }
+        } catch (e) {
+          console.warn(`[publisher] post=${postId} S0b failed: ${e.message}`);
+        }
+      }
+
+      if (!imgStrategy) {
+        console.warn(`[publisher] post=${postId} Image upload failed — continuing without images`);
+      }
+
+      // After image upload, the dialog may have changed state.
+      // Wait for it to settle before finding the composer for text injection.
+      await sleep(1000);
+    }
+
+    // ── 5. Re-find the composer (it may have expanded after image upload) ─
+    // The dialog structure changes when photos are attached — re-query fresh.
+    composerEl = null;
+    const COMPOSER_SELECTORS2 = [
+      'div[role="dialog"] div[role="textbox"][contenteditable="true"]',
+      'div[role="dialog"] div[data-lexical-editor="true"]',
+      'div[role="dialog"] div[contenteditable="true"][spellcheck="true"]',
+      'div[role="dialog"] div[contenteditable="true"]',
+    ];
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      for (const sel of COMPOSER_SELECTORS2) {
+        try {
+          const el = await page.locator(sel).first().elementHandle({ timeout: 500 });
+          if (el) { composerEl = el; break; }
+        } catch {}
+      }
+      if (composerEl) break;
+      await sleep(800);
+    }
+    if (!composerEl) throw new Error('Could not find composer editor after image upload');
+
+    // ── 6. Inject text ────────────────────────────────────────────────────
 
     // Helper: check that text AND line breaks were injected into Lexical.
-    // Lexical creates a <p> per paragraph — if we have newlines but only
-    // one <p>, the insertParagraph execCommand silently failed.
     const expectedNewlines = (fullContent.match(/\n/g) ?? []).length;
 
     const checkInjected = async () => {
@@ -184,9 +267,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       }, { el: composerEl, text: fullContent, newlines: expectedNewlines });
     };
 
-    // Method 0: Playwright-native keyboard (real user-gesture keystrokes)
-    // Uses CDP Input.insertText + real Enter keypress — Lexical treats this
-    // as genuine user input and creates a new <p> per line.
+    // Method 0: Playwright-native keyboard (real CDP keystrokes — Lexical treats as user input)
     let injected = false;
     try {
       await composerEl.click();
@@ -212,9 +293,8 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       console.warn(`[publisher] post=${postId} M0 failed: ${e.message}`);
     }
 
-    // Method 1: execCommand insertText + insertParagraph (fallback)
+    // Method 1: execCommand (fallback)
     if (!injected) {
-      console.warn(`[publisher] post=${postId} M0 failed — trying M1 execCommand`);
       await page.evaluate(({ el, text }) => {
         el.focus();
         document.execCommand('selectAll', false);
@@ -229,9 +309,8 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       console.log(`[publisher] post=${postId} Text M1 injected=${injected}`);
     }
 
-    // Method 2: DataTransfer setData paste
+    // Method 2: DataTransfer paste (fallback)
     if (!injected) {
-      console.warn(`[publisher] post=${postId} M1 failed — trying M2 setData paste`);
       await page.evaluate(({ el, text }) => {
         el.focus();
         document.execCommand('selectAll', false);
@@ -245,90 +324,41 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       console.log(`[publisher] post=${postId} Text M2 injected=${injected}`);
     }
 
-    // Method 3: File-based paste (text/plain File in DataTransfer)
+    // Method 3: char-by-char InputEvent (last resort)
     if (!injected) {
-      console.warn(`[publisher] post=${postId} M2 failed — trying M3 file-based paste`);
-      await page.evaluate(({ el, text }) => {
+      await page.evaluate(async ({ el, text }) => {
         el.focus();
         document.execCommand('selectAll', false);
         document.execCommand('delete', false);
-        const blob = new Blob([text], { type: 'text/plain' });
-        const file = new File([blob], 'post_text.txt', { type: 'text/plain' });
-        const dt = new DataTransfer();
-        dt.items.add(file);
-        dt.setData('text/plain', text);
-        el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+        await new Promise(r => setTimeout(r, 200));
+        for (let i = 0; i < text.length; i++) {
+          const char = text[i], isNewline = char === '\n';
+          const key = isNewline ? 'Enter' : char, keyCode = isNewline ? 13 : char.charCodeAt(0);
+          el.dispatchEvent(new KeyboardEvent('keydown', { key, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true }));
+          el.dispatchEvent(new InputEvent('beforeinput', { inputType: isNewline ? 'insertParagraph' : 'insertText', data: isNewline ? null : char, bubbles: true, cancelable: true, composed: true }));
+          el.dispatchEvent(new InputEvent('input', { inputType: isNewline ? 'insertParagraph' : 'insertText', data: isNewline ? null : char, bubbles: true, cancelable: false, composed: true }));
+          el.dispatchEvent(new KeyboardEvent('keyup', { key, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true }));
+          if (i % 10 === 9) await new Promise(r => setTimeout(r, 20));
+        }
       }, { el: composerEl, text: fullContent });
       await sleep(2000);
       injected = await checkInjected();
       console.log(`[publisher] post=${postId} Text M3 injected=${injected}`);
     }
 
-    // Method 4: char-by-char InputEvent dispatch (most reliable for Lexical newlines)
-    if (!injected) {
-      console.warn(`[publisher] post=${postId} M3 failed — trying M4 char-by-char InputEvent`);
-      await page.evaluate(async ({ el, text }) => {
-        el.focus();
-        document.execCommand('selectAll', false);
-        document.execCommand('delete', false);
-        await new Promise(r => setTimeout(r, 200));
-
-        for (let i = 0; i < text.length; i++) {
-          const char      = text[i];
-          const isNewline = char === '\n';
-          const key       = isNewline ? 'Enter' : char;
-          const keyCode   = isNewline ? 13 : char.charCodeAt(0);
-
-          el.dispatchEvent(new KeyboardEvent('keydown', {
-            key, code: isNewline ? 'Enter' : '', keyCode, which: keyCode,
-            bubbles: true, cancelable: true, composed: true,
-          }));
-          el.dispatchEvent(new InputEvent('beforeinput', {
-            inputType: isNewline ? 'insertParagraph' : 'insertText',
-            data: isNewline ? null : char,
-            bubbles: true, cancelable: true, composed: true,
-          }));
-          el.dispatchEvent(new InputEvent('input', {
-            inputType: isNewline ? 'insertParagraph' : 'insertText',
-            data: isNewline ? null : char,
-            bubbles: true, cancelable: false, composed: true,
-          }));
-          el.dispatchEvent(new KeyboardEvent('keyup', {
-            key, code: isNewline ? 'Enter' : '', keyCode, which: keyCode,
-            bubbles: true, cancelable: true, composed: true,
-          }));
-
-          if (i % 10 === 9) await new Promise(r => setTimeout(r, 20));
-        }
-      }, { el: composerEl, text: fullContent });
-      await sleep(2000);
-      injected = await checkInjected();
-      console.log(`[publisher] post=${postId} Text M4 injected=${injected}`);
-    }
-
-    if (!injected) {
-      throw new Error('Text injection failed — all 4 methods failed');
-    }
-
+    if (!injected) throw new Error('Text injection failed — all methods failed');
     console.log(`[publisher] post=${postId} Text injection confirmed ✓`);
     await sleep(2000);
 
-    // ── 4a. Link preview hydration ────────────────────────────────────────
-    // After the URL is at the end of the text, press Space so Facebook
-    // detects it and renders a preview card.
+    // ── 6a. Link preview hydration ────────────────────────────────────────
     if (linkUrl) {
-      console.log(`[publisher] post=${postId} Triggering link preview...`);
       try {
         await page.evaluate(el => {
           el.focus();
           const sel = window.getSelection();
-          if (sel && el.lastChild) {
-            sel.selectAllChildren(el);
-            sel.collapseToEnd();
-          }
+          if (sel && el.lastChild) { sel.selectAllChildren(el); sel.collapseToEnd(); }
         }, composerEl);
         await sleep(300);
-
         await page.evaluate(el => {
           const opts = { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true, composed: true };
           el.dispatchEvent(new KeyboardEvent('keydown', opts));
@@ -336,7 +366,6 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
           el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: ' ', bubbles: true }));
           el.dispatchEvent(new KeyboardEvent('keyup', opts));
         }, composerEl);
-
         await sleep(3000);
         console.log(`[publisher] post=${postId} Link preview hydration done`);
       } catch (e) {
@@ -344,43 +373,9 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       }
     }
 
-    // ── 5. Upload images (mirrors extension STEP 3b) ──────────────────────
-    if (imageUrls.length > 0) {
-      console.log(`[publisher] post=${postId} Uploading ${imageUrls.length} image(s)`);
-      for (const url of imageUrls) {
-        const tmp = await downloadImage(url);
-        tmpFiles.push(tmp);
-      }
-
-      let imgStrategy = null;
-
-      // Strategy 0: Playwright-native setInputFiles (real user-gesture file picker)
-      try {
-        const photoBtn = page.locator(
-          '[aria-label="תמונה/סרטון"], [aria-label="Photo/video"], ' +
-          '[aria-label="Photo"], [aria-label="תמונה"], [aria-label="Add photos/videos"]'
-        ).first();
-
-        if (await photoBtn.count() > 0) {
-          await photoBtn.click({ timeout: 3000 });
-          await sleep(1500);
-
-          // Facebook mounts several hidden file inputs; the one tied to the
-          // dialog is usually the last image-accepting input in the DOM.
-          const fileInput = page.locator('input[type="file"][accept*="image"]').last();
-          if (await fileInput.count() > 0) {
-            await fileInput.setInputFiles(tmpFiles);
-            await sleep(Math.max(3000, tmpFiles.length * 2000));
-            imgStrategy = 'S0-playwright-native';
-            console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
-          }
-        }
-      } catch (e) {
-        console.warn(`[publisher] post=${postId} S0 failed: ${e.message}`);
-      }
-
-      // Strategies S1–S4 (JS event dispatch) — fallback only if S0 didn't run
-      if (!imgStrategy) try {
+    // (no more image upload section — moved to step 4 above)
+    // Strategies S1–S4 (JS event dispatch) — legacy, kept for reference only
+    if (false) try {
         const imageData = await Promise.all(
           tmpFiles.map(async (p) => ({
             b64:  (await readFile(p)).toString('base64'),
