@@ -183,7 +183,8 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
           return !!(
             d?.querySelector('img[src^="blob:"]') ||
             d?.querySelector('[data-visualcompletion="media-vc-image"]') ||
-            d?.querySelector('div[role="img"]')
+            d?.querySelector('div[role="img"]') ||
+            d?.querySelector('[data-testid="media-attachment-preview"]')
           );
         });
 
@@ -200,66 +201,123 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
         // Cap is generous: 2s per image + 4s base, max 30s
         const previewCapMs = Math.min(30_000, 4_000 + tmpFiles.length * 2_000);
 
-        // S0: Click photo button → catch native filechooser (most reliable)
+        // Diagnostic: log buttons available in dialog to help debug selector issues
+        const dialogBtns = await page.evaluate(() => {
+          const dialog = document.querySelector('div[role="dialog"]');
+          return [...(dialog?.querySelectorAll('[role="button"]') ?? [])]
+            .map(el => el.getAttribute('aria-label') || el.textContent?.trim().slice(0, 25))
+            .filter(Boolean).slice(0, 15);
+        });
+        console.log(`[publisher] post=${postId} Dialog buttons: ${JSON.stringify(dialogBtns)}`);
+
+        // S0: Direct — try pre-rendered hidden file input in dialog (no button click needed).
+        // Facebook sometimes has an <input type="file"> already in the DOM.
         try {
-          const PHOTO_LABELS = [
-            '[aria-label="תמונה/סרטון"]', '[aria-label="Photo/video"]',
-            '[aria-label="Photo"]',        '[aria-label="תמונה"]',
-            '[aria-label="Add photos/videos"]', '[aria-label="הוסף תמונה"]',
-          ];
-          const photoBtn = page.locator(PHOTO_LABELS.join(', ')).first();
-          const photoBtnReady = await photoBtn.count() > 0;
-
-          if (photoBtnReady) {
-            // Set up filechooser listener BEFORE clicking (intercepts native OS file dialog)
-            const chooserPromise = page.waitForEvent('filechooser', { timeout: 6000 }).catch(() => null);
-            await photoBtn.click({ timeout: 4000 });
-            const chooser = await chooserPromise;
-
-            if (chooser) {
-              await chooser.setFiles(tmpFiles);
-              if (await waitForPreview(previewCapMs)) {
-                imgStrategy = 'S0-filechooser';
-              } else {
-                console.warn(`[publisher] post=${postId} S0-filechooser: files sent but no preview detected`);
-              }
-            } else {
-              // No native dialog — try setInputFiles on the activated hidden input
-              await sleep(500);
-              const fileInput = page.locator('input[type="file"]').last();
-              if (await fileInput.count() > 0) {
-                await fileInput.setInputFiles(tmpFiles);
-                if (await waitForPreview(previewCapMs)) imgStrategy = 'S0-setInputFiles';
-              }
-            }
-          } else {
-            // Broader search: any dialog button whose aria-label mentions photo/image
-            const found = await page.evaluate(() => {
-              const dialog = document.querySelector('div[role="dialog"]');
-              for (const btn of dialog?.querySelectorAll('[role="button"]') ?? []) {
-                if (/תמונ|photo|image|media/i.test(btn.getAttribute('aria-label') ?? '')) {
-                  btn.click();
-                  return true;
-                }
-              }
-              return false;
-            });
-            if (found) {
-              await sleep(1500);
-              const fileInput = page.locator('input[type="file"]').last();
-              if (await fileInput.count() > 0) {
-                await fileInput.setInputFiles(tmpFiles);
-                if (await waitForPreview(previewCapMs)) imgStrategy = 'S0-broad-btn';
-              }
+          const directInput = page.locator('div[role="dialog"] input[type="file"]').first();
+          if (await directInput.count() > 0) {
+            await directInput.setInputFiles(tmpFiles);
+            if (await waitForPreview(previewCapMs)) {
+              imgStrategy = 'S0-direct';
+              console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
             }
           }
         } catch (e) {
           console.warn(`[publisher] post=${postId} S0 failed: ${e.message}`);
         }
 
-        if (imgStrategy) {
-          console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
-        } else {
+        // S1: Click photo button via page.evaluate (bypasses overlay pointer-event interception),
+        // then use setInputFiles on whatever file input appears.
+        if (!imgStrategy) {
+          try {
+            const PHOTO_LABELS_JS = [
+              'תמונה/סרטון', 'Photo/video', 'Photo', 'תמונה',
+              'Add photos/videos', 'הוסף תמונה', 'הוספת תמונות/סרטונים',
+            ];
+            const clickResult = await page.evaluate((labels) => {
+              const dialog = document.querySelector('div[role="dialog"]');
+              if (!dialog) return null;
+              for (const label of labels) {
+                const el = dialog.querySelector(`[aria-label="${label}"]`);
+                if (el) { el.click(); return `aria=${label}`; }
+              }
+              // Partial aria-label match for photo/image/media/video
+              for (const el of dialog.querySelectorAll('[role="button"], button, label, div[tabindex]')) {
+                const lbl = (el.getAttribute('aria-label') ?? '').toLowerCase();
+                if (lbl && /תמונ|photo|image|media|video/.test(lbl)) {
+                  el.click();
+                  return `partial=${el.getAttribute('aria-label')}`;
+                }
+              }
+              return null;
+            }, PHOTO_LABELS_JS);
+
+            if (clickResult) {
+              console.log(`[publisher] post=${postId} Photo btn JS click: ${clickResult}`);
+              await sleep(2000);
+              for (const sel of [
+                'div[role="dialog"] input[type="file"]',
+                'input[type="file"][accept*="image"]',
+                'input[type="file"]',
+              ]) {
+                const fi = page.locator(sel).last();
+                if (await fi.count() > 0) {
+                  await fi.setInputFiles(tmpFiles);
+                  if (await waitForPreview(previewCapMs)) {
+                    imgStrategy = 'S1-js-click';
+                    console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+                    break;
+                  }
+                }
+              }
+            } else {
+              console.warn(`[publisher] post=${postId} S1: no photo button found via JS`);
+            }
+          } catch (e) {
+            console.warn(`[publisher] post=${postId} S1 failed: ${e.message}`);
+          }
+        }
+
+        // S2: Playwright locator click + filechooser (may be intercepted by overlays, kept as fallback)
+        if (!imgStrategy) {
+          try {
+            const PHOTO_SEL = [
+              '[aria-label="תמונה/סרטון"]', '[aria-label="Photo/video"]',
+              '[aria-label="Photo"]',        '[aria-label="תמונה"]',
+              '[aria-label="Add photos/videos"]', '[aria-label="הוסף תמונה"]',
+            ].join(', ');
+            const photoBtn = page.locator(PHOTO_SEL).first();
+            if (await photoBtn.count() > 0) {
+              const chooserPromise = page.waitForEvent('filechooser', { timeout: 6000 }).catch(() => null);
+              await photoBtn.click({ timeout: 4000 });
+              const chooser = await chooserPromise;
+              if (chooser) {
+                await chooser.setFiles(tmpFiles);
+                if (await waitForPreview(previewCapMs)) {
+                  imgStrategy = 'S2-filechooser';
+                  console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+                } else {
+                  console.warn(`[publisher] post=${postId} S2-filechooser: files sent but no preview`);
+                }
+              } else {
+                await sleep(500);
+                const fi = page.locator('input[type="file"]').last();
+                if (await fi.count() > 0) {
+                  await fi.setInputFiles(tmpFiles);
+                  if (await waitForPreview(previewCapMs)) {
+                    imgStrategy = 'S2-no-chooser';
+                    console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+                  }
+                }
+              }
+            } else {
+              console.warn(`[publisher] post=${postId} S2: photo btn locator matched 0 elements`);
+            }
+          } catch (e) {
+            console.warn(`[publisher] post=${postId} S2 failed: ${e.message}`);
+          }
+        }
+
+        if (!imgStrategy) {
           console.warn(`[publisher] post=${postId} Image upload failed — continuing without images`);
         }
       }

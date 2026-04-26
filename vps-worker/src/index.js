@@ -141,7 +141,7 @@ async function main() {
       }
 
       // ── Anti-ban delay between consecutive posts ───────────────────────────
-      const postDelay = randomBetween(300_000, 900_000);
+      const postDelay = randomBetween(420_000, 480_000);
       console.log(`[worker] Next post in ${Math.round(postDelay / 60_000)} min`);
       await sleep(postDelay);
 
