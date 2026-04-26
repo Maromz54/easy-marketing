@@ -50,6 +50,14 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
   // Build full post content: text body + link URL appended (if any)
   const fullContent = linkUrl ? `${content}\n\n${linkUrl}` : content;
 
+  // Single source of truth for composer selectors (Lexical editor inside dialog)
+  const DIALOG_COMPOSER_SEL = [
+    'div[role="dialog"] div[role="textbox"][contenteditable="true"]',
+    'div[role="dialog"] div[data-lexical-editor="true"]',
+    'div[role="dialog"] div[contenteditable="true"][spellcheck="true"]',
+    'div[role="dialog"] div[contenteditable="true"]',
+  ].join(', ');
+
   try {
     // ── 1. Navigate ───────────────────────────────────────────────────────
     console.log(`[publisher] post=${postId} Navigating to group ${groupId}`);
@@ -86,43 +94,47 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     await sleep(500);
 
     // ── 2. Click the compose trigger (mirrors extension STEP 1) ──────────
-    const triggerResult = await page.evaluate(() => {
-      const TRIGGER_TEXTS = [
-        'כאן כותבים...', 'Write something...', 'כתוב משהו...',
-        'מה אתה חושב?', "What's on your mind?",
-      ];
+    // Retry up to 8 times — Facebook's compose button may render late on slow connections.
+    let triggerResult = null;
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      triggerResult = await page.evaluate(() => {
+        const TRIGGER_TEXTS = [
+          'כאן כותבים...', 'Write something...', 'כתוב משהו...',
+          'מה אתה חושב?', "What's on your mind?",
+        ];
 
-      // aria-label / aria-placeholder (most reliable)
-      for (const text of TRIGGER_TEXTS) {
-        const el = document.querySelector(`[aria-label="${text}"]`) ||
-                   document.querySelector(`[aria-placeholder="${text}"]`);
-        if (el) { el.click(); return `aria: "${text}"`; }
-      }
-
-      // div[role="button"] with matching text content
-      for (const el of document.querySelectorAll('div[role="button"]')) {
-        const txt = (el.textContent ?? '').trim();
-        if (TRIGGER_TEXTS.some(t => txt.includes(t.replace('...', '')))) {
-          el.click();
-          return `text: "${txt.slice(0, 50)}"`;
+        for (const text of TRIGGER_TEXTS) {
+          const el = document.querySelector(`[aria-label="${text}"]`) ||
+                     document.querySelector(`[aria-placeholder="${text}"]`);
+          if (el) { el.click(); return `aria: "${text}"`; }
         }
-      }
 
-      // Broad fallback: any element whose direct text node starts with a compose phrase
-      const phrases = ['כאן כותבים', 'מה אתה חושב', 'Write something', "What's on your mind"];
-      for (const el of document.querySelectorAll('*')) {
-        const own = [...el.childNodes]
-          .filter(n => n.nodeType === 3)
-          .map(n => n.textContent.trim())
-          .join('');
-        if (own.length > 0 && own.length < 60 && phrases.some(p => own.startsWith(p))) {
-          el.click();
-          return `fallback: "${own.slice(0, 40)}"`;
+        for (const el of document.querySelectorAll('div[role="button"]')) {
+          const txt = (el.textContent ?? '').trim();
+          if (TRIGGER_TEXTS.some(t => txt.includes(t.replace('...', '')))) {
+            el.click();
+            return `text: "${txt.slice(0, 50)}"`;
+          }
         }
-      }
 
-      return null;
-    });
+        const phrases = ['כאן כותבים', 'מה אתה חושב', 'Write something', "What's on your mind"];
+        for (const el of document.querySelectorAll('*')) {
+          const own = [...el.childNodes]
+            .filter(n => n.nodeType === 3)
+            .map(n => n.textContent.trim())
+            .join('');
+          if (own.length > 0 && own.length < 60 && phrases.some(p => own.startsWith(p))) {
+            el.click();
+            return `fallback: "${own.slice(0, 40)}"`;
+          }
+        }
+        return null;
+      });
+
+      if (triggerResult) break;
+      console.log(`[publisher] post=${postId} Compose trigger not found (attempt ${attempt}/8)`);
+      await sleep(1500);
+    }
 
     if (!triggerResult) throw new Error('Could not find compose button in group');
     console.log(`[publisher] post=${postId} Compose trigger clicked via: ${triggerResult}`);
@@ -132,21 +144,11 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
 
     // ── 3. Find Lexical editor INSIDE the dialog (mirrors extension STEP 2) ──
     // Scoping to div[role="dialog"] prevents accidentally targeting comment boxes.
-    const COMPOSER_SELECTORS = [
-      'div[role="dialog"] div[role="textbox"][contenteditable="true"]',
-      'div[role="dialog"] div[data-lexical-editor="true"]',
-      'div[role="dialog"] div[contenteditable="true"][spellcheck="true"]',
-      'div[role="dialog"] div[contenteditable="true"]',
-    ];
-
     let composerEl = null;
     for (let attempt = 1; attempt <= 15; attempt++) {
-      for (const sel of COMPOSER_SELECTORS) {
-        try {
-          const el = await page.locator(sel).first().elementHandle({ timeout: 500 });
-          if (el) { composerEl = el; break; }
-        } catch {}
-      }
+      try {
+        composerEl = await page.locator(DIALOG_COMPOSER_SEL).first().elementHandle({ timeout: 500 });
+      } catch {}
       if (composerEl) {
         console.log(`[publisher] post=${postId} Composer found (attempt ${attempt})`);
         break;
@@ -160,129 +162,125 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     // By uploading images on the empty composer first, we avoid losing text.
     if (imageUrls.length > 0) {
       console.log(`[publisher] post=${postId} Downloading ${imageUrls.length} image(s)`);
+      // Per-image error tolerance: one bad URL shouldn't kill the post
       for (const url of imageUrls) {
-        const tmp = await downloadImage(url);
-        tmpFiles.push(tmp);
-      }
-
-      let imgStrategy = null;
-
-      // Check if a photo preview appeared inside the dialog
-      const hasImagePreview = async () => page.evaluate(() => {
-        const d = document.querySelector('div[role="dialog"]');
-        return !!(
-          d?.querySelector('img[src^="blob:"]') ||
-          d?.querySelector('[data-visualcompletion="media-vc-image"]') ||
-          d?.querySelector('div[role="img"]')
-        );
-      });
-
-      // S0: Click photo button → catch native filechooser (most reliable)
-      try {
-        // Find the photo/video toolbar button inside the dialog
-        const PHOTO_LABELS = [
-          '[aria-label="תמונה/סרטון"]', '[aria-label="Photo/video"]',
-          '[aria-label="Photo"]',        '[aria-label="תמונה"]',
-          '[aria-label="Add photos/videos"]', '[aria-label="הוסף תמונה"]',
-        ];
-        let photoBtn = page.locator(PHOTO_LABELS.join(', ')).first();
-        let photoBtnReady = await photoBtn.count() > 0;
-
-        if (!photoBtnReady) {
-          // Broader search: any dialog button whose aria-label mentions photo/image
-          const found = await page.evaluate(() => {
-            const dialog = document.querySelector('div[role="dialog"]');
-            for (const btn of dialog?.querySelectorAll('[role="button"]') ?? []) {
-              if (/תמונ|photo|image|media/i.test(btn.getAttribute('aria-label') ?? '')) {
-                btn.click();
-                return true;
-              }
-            }
-            return false;
-          });
-          if (found) {
-            await sleep(1500);
-            const fileInput = page.locator('input[type="file"]').last();
-            if (await fileInput.count() > 0) {
-              await fileInput.setInputFiles(tmpFiles);
-              await sleep(Math.max(4000, tmpFiles.length * 2000));
-              if (await hasImagePreview()) {
-                imgStrategy = 'S0-broad-btn';
-                console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
-              }
-            }
-          }
-        } else {
-          // Set up filechooser listener BEFORE clicking (intercepts native OS file dialog)
-          const chooserPromise = page.waitForEvent('filechooser', { timeout: 6000 }).catch(() => null);
-          await photoBtn.click({ timeout: 4000 });
-          const chooser = await chooserPromise;
-
-          if (chooser) {
-            await chooser.setFiles(tmpFiles);
-            await sleep(Math.max(4000, tmpFiles.length * 2000));
-            imgStrategy = 'S0-filechooser';
-            console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
-          } else {
-            // No native dialog — try setInputFiles on the activated hidden input
-            await sleep(500);
-            const fileInput = page.locator('input[type="file"]').last();
-            if (await fileInput.count() > 0) {
-              await fileInput.setInputFiles(tmpFiles);
-              await sleep(Math.max(4000, tmpFiles.length * 2000));
-              if (await hasImagePreview()) {
-                imgStrategy = 'S0-setInputFiles';
-                console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
-              }
-            }
-          }
+        try {
+          const tmp = await downloadImage(url);
+          tmpFiles.push(tmp);
+        } catch (e) {
+          console.warn(`[publisher] post=${postId} skipped image ${url}: ${e.message}`);
         }
-      } catch (e) {
-        console.warn(`[publisher] post=${postId} S0 failed: ${e.message}`);
       }
 
-      if (!imgStrategy) {
-        console.warn(`[publisher] post=${postId} Image upload failed — continuing without images`);
+      if (tmpFiles.length === 0) {
+        console.warn(`[publisher] post=${postId} All image downloads failed — continuing without images`);
+      } else {
+        let imgStrategy = null;
+
+        // Check if a photo preview appeared inside the dialog
+        const hasImagePreview = () => page.evaluate(() => {
+          const d = document.querySelector('div[role="dialog"]');
+          return !!(
+            d?.querySelector('img[src^="blob:"]') ||
+            d?.querySelector('[data-visualcompletion="media-vc-image"]') ||
+            d?.querySelector('div[role="img"]')
+          );
+        });
+
+        // Poll for image preview — return as soon as it appears, capped at maxMs
+        const waitForPreview = async (maxMs) => {
+          const deadline = Date.now() + maxMs;
+          while (Date.now() < deadline) {
+            if (await hasImagePreview()) return true;
+            await sleep(500);
+          }
+          return false;
+        };
+
+        // Cap is generous: 2s per image + 4s base, max 30s
+        const previewCapMs = Math.min(30_000, 4_000 + tmpFiles.length * 2_000);
+
+        // S0: Click photo button → catch native filechooser (most reliable)
+        try {
+          const PHOTO_LABELS = [
+            '[aria-label="תמונה/סרטון"]', '[aria-label="Photo/video"]',
+            '[aria-label="Photo"]',        '[aria-label="תמונה"]',
+            '[aria-label="Add photos/videos"]', '[aria-label="הוסף תמונה"]',
+          ];
+          const photoBtn = page.locator(PHOTO_LABELS.join(', ')).first();
+          const photoBtnReady = await photoBtn.count() > 0;
+
+          if (photoBtnReady) {
+            // Set up filechooser listener BEFORE clicking (intercepts native OS file dialog)
+            const chooserPromise = page.waitForEvent('filechooser', { timeout: 6000 }).catch(() => null);
+            await photoBtn.click({ timeout: 4000 });
+            const chooser = await chooserPromise;
+
+            if (chooser) {
+              await chooser.setFiles(tmpFiles);
+              if (await waitForPreview(previewCapMs)) {
+                imgStrategy = 'S0-filechooser';
+              } else {
+                console.warn(`[publisher] post=${postId} S0-filechooser: files sent but no preview detected`);
+              }
+            } else {
+              // No native dialog — try setInputFiles on the activated hidden input
+              await sleep(500);
+              const fileInput = page.locator('input[type="file"]').last();
+              if (await fileInput.count() > 0) {
+                await fileInput.setInputFiles(tmpFiles);
+                if (await waitForPreview(previewCapMs)) imgStrategy = 'S0-setInputFiles';
+              }
+            }
+          } else {
+            // Broader search: any dialog button whose aria-label mentions photo/image
+            const found = await page.evaluate(() => {
+              const dialog = document.querySelector('div[role="dialog"]');
+              for (const btn of dialog?.querySelectorAll('[role="button"]') ?? []) {
+                if (/תמונ|photo|image|media/i.test(btn.getAttribute('aria-label') ?? '')) {
+                  btn.click();
+                  return true;
+                }
+              }
+              return false;
+            });
+            if (found) {
+              await sleep(1500);
+              const fileInput = page.locator('input[type="file"]').last();
+              if (await fileInput.count() > 0) {
+                await fileInput.setInputFiles(tmpFiles);
+                if (await waitForPreview(previewCapMs)) imgStrategy = 'S0-broad-btn';
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(`[publisher] post=${postId} S0 failed: ${e.message}`);
+        }
+
+        if (imgStrategy) {
+          console.log(`[publisher] post=${postId} Image inject: ${imgStrategy}`);
+        } else {
+          console.warn(`[publisher] post=${postId} Image upload failed — continuing without images`);
+        }
       }
 
-      // After image upload, the dialog may have changed state.
-      // Wait for it to settle before finding the composer for text injection.
+      // Let the dialog settle before re-finding the composer for text injection
       await sleep(1000);
     }
 
     // ── 5. Re-find the composer (it may have expanded after image upload) ─
     // The dialog structure changes when photos are attached — re-query fresh.
     composerEl = null;
-    const COMPOSER_SELECTORS2 = [
-      'div[role="dialog"] div[role="textbox"][contenteditable="true"]',
-      'div[role="dialog"] div[data-lexical-editor="true"]',
-      'div[role="dialog"] div[contenteditable="true"][spellcheck="true"]',
-      'div[role="dialog"] div[contenteditable="true"]',
-    ];
     for (let attempt = 1; attempt <= 10; attempt++) {
-      for (const sel of COMPOSER_SELECTORS2) {
-        try {
-          const el = await page.locator(sel).first().elementHandle({ timeout: 500 });
-          if (el) { composerEl = el; break; }
-        } catch {}
-      }
+      try {
+        composerEl = await page.locator(DIALOG_COMPOSER_SEL).first().elementHandle({ timeout: 500 });
+      } catch {}
       if (composerEl) break;
       await sleep(800);
     }
     if (!composerEl) throw new Error('Could not find composer editor after image upload');
 
     // ── 6. Inject text ────────────────────────────────────────────────────
-
-    // Helper: check that text AND line breaks were injected into Lexical.
-    const expectedNewlines = (fullContent.match(/\n/g) ?? []).length;
-
-    // Selector string reused for fresh locator queries (avoids stale ElementHandle)
-    const DIALOG_COMPOSER_SEL = [
-      'div[role="dialog"] div[role="textbox"][contenteditable="true"]',
-      'div[role="dialog"] div[data-lexical-editor="true"]',
-      'div[role="dialog"] div[contenteditable="true"][spellcheck="true"]',
-      'div[role="dialog"] div[contenteditable="true"]',
-    ].join(', ');
 
     // Check injection by text length only — paragraph structure varies across Lexical versions.
     // Log paragraph count separately for diagnostics without using it as a gate.
@@ -295,10 +293,10 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     };
 
     // Clear the editor before each fallback to prevent text duplication.
-    // Uses a fresh locator (not the cached ElementHandle) to avoid stale-handle failures.
+    // Uses focus() (not click) to bypass Facebook's overlay-pointer-event interception.
     const clearEditor = async () => {
       try {
-        await page.locator(DIALOG_COMPOSER_SEL).first().click({ timeout: 2000 });
+        await composerEl.evaluate(el => el.focus());
         await sleep(100);
         await page.keyboard.press('Control+A');
         await page.keyboard.press('Delete');
@@ -309,7 +307,9 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     // Method 0: Playwright-native keyboard (real CDP keystrokes — Lexical treats as user input)
     let injected = false;
     try {
-      await composerEl.click();
+      // focus() via element.focus() inside page.evaluate avoids Facebook overlays
+      // that intercept synthetic clicks (which would trigger 30s actionability retries).
+      await composerEl.evaluate(el => el.focus());
       await sleep(200);
       await page.keyboard.press('Control+A');
       await page.keyboard.press('Delete');
@@ -395,12 +395,11 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     // ── 6a. Link preview hydration ────────────────────────────────────────
     if (linkUrl) {
       try {
-        // Re-query the composer with a fresh locator — composerEl may be stale after typing
-        const freshComposer = page.locator(DIALOG_COMPOSER_SEL).first();
-        await freshComposer.click({ timeout: 3000 });
+        // Use focus() not click() — avoids Facebook overlays intercepting pointer events
+        await composerEl.evaluate(el => el.focus());
         await sleep(300);
-        // Move caret to end, then press Space to trigger Facebook's URL-detection
-        await page.keyboard.press('End');
+        // Move caret to the very end of all content (Ctrl+End, not End — End only goes to end-of-line)
+        await page.keyboard.press('Control+End');
         await page.keyboard.type(' ');
         await sleep(3000);
         console.log(`[publisher] post=${postId} Link preview hydration done`);
@@ -430,11 +429,16 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     // ── 6. Find and click Post button (mirrors extension STEP 4) ─────────
     const POST_LABELS = ['פרסום', 'פרסם', 'Post', 'שתף', 'Share'];
 
+    // 25 attempts × 800ms = 20s total. Facebook may keep the Post button
+    // aria-disabled while uploading photos / processing the post — give it time.
     let posted = false;
-    for (let attempt = 1; attempt <= 10; attempt++) {
-      const result = await page.evaluate((labels) => {
+    for (let attempt = 1; attempt <= 25; attempt++) {
+      // On the very last attempt, allow clicking aria-disabled buttons (defensive fallback)
+      const allowDisabled = attempt === 25;
+      const result = await page.evaluate(({ labels, allowDisabled }) => {
         const dialog = document.querySelector('div[role="dialog"]');
         const root   = dialog ?? document;
+        const enabled = (el) => allowDisabled || el.getAttribute('aria-disabled') !== 'true';
 
         function humanClick(el) {
           const r  = el.getBoundingClientRect();
@@ -452,7 +456,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
           const el = root.querySelector(`[aria-label="${label}"][role="button"]`) ||
                      root.querySelector(`button[aria-label="${label}"]`) ||
                      root.querySelector(`[aria-label="${label}"]`);
-          if (el && el.getAttribute('aria-disabled') !== 'true') {
+          if (el && enabled(el)) {
             el.scrollIntoView({ block: 'center', behavior: 'instant' });
             humanClick(el);
             return `S1 aria-label="${label}"`;
@@ -463,7 +467,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
         const lower = labels.map(l => l.toLowerCase());
         for (const el of root.querySelectorAll('[role="button"], button')) {
           const txt = (el.textContent ?? '').trim().toLowerCase();
-          if (lower.includes(txt) && el.getAttribute('aria-disabled') !== 'true') {
+          if (lower.includes(txt) && enabled(el)) {
             el.scrollIntoView({ block: 'center', behavior: 'instant' });
             humanClick(el);
             return `S2 text="${txt}"`;
@@ -480,7 +484,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
               const m  = bg.match(/rgb[a]?\((\d+),\s*(\d+),\s*(\d+)/);
               if (m) {
                 const [, r2, g, b] = m.map(Number);
-                if (b > 180 && b > r2 * 2 && el.getAttribute('aria-disabled') !== 'true') {
+                if (b > 180 && b > r2 * 2 && enabled(el)) {
                   el.scrollIntoView({ block: 'center', behavior: 'instant' });
                   humanClick(el);
                   return `S3 blue bg="${bg}"`;
@@ -495,7 +499,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
           const cands = [...dialog.querySelectorAll('[role="button"]')]
             .filter(el => {
               const r = el.getBoundingClientRect();
-              return r.width >= 40 && r.height >= 24 && el.getAttribute('aria-disabled') !== 'true';
+              return r.width >= 40 && r.height >= 24 && enabled(el);
             })
             .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
           if (cands[0]) {
@@ -506,15 +510,17 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
         }
 
         return null;
-      }, POST_LABELS);
+      }, { labels: POST_LABELS, allowDisabled });
 
       if (result) {
         posted = true;
-        console.log(`[publisher] post=${postId} Post button clicked via: ${result}`);
+        console.log(`[publisher] post=${postId} Post button clicked via: ${result}${allowDisabled ? ' (forced)' : ''}`);
         break;
       }
 
-      console.log(`[publisher] post=${postId} Post button not ready (attempt ${attempt}/10)`);
+      if (attempt % 5 === 0) {
+        console.log(`[publisher] post=${postId} Post button not ready (attempt ${attempt}/25)`);
+      }
       await sleep(800);
     }
 
