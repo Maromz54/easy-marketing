@@ -10,5 +10,8 @@
     "@supabase/supabase-js": "^2",
     "dotenv": "^16",
     "playwright": "^1"
+  },
+  "devDependencies": {
+    "ssh2": "^1.17.0"
   }
 }

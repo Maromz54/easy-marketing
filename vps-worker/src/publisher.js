@@ -319,6 +319,28 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
 
         if (!imgStrategy) {
           console.warn(`[publisher] post=${postId} Image upload failed — continuing without images`);
+        } else {
+          // After image upload, Facebook sometimes leaves a photo-picker sub-panel open
+          // that hides the Post button. Close it by clicking Done/Add/OK if present.
+          const pickerClosed = await page.evaluate(() => {
+            const dialog = document.querySelector('div[role="dialog"]');
+            if (!dialog) return null;
+            const DONE_LABELS = ['סיום', 'הוסף', 'הוספה', 'אישור', 'Done', 'Add', 'OK', 'בוצע'];
+            for (const label of DONE_LABELS) {
+              const btn = dialog.querySelector(`[aria-label="${label}"][role="button"]`) ||
+                          dialog.querySelector(`button[aria-label="${label}"]`);
+              if (btn) { btn.click(); return `aria=${label}`; }
+            }
+            for (const btn of dialog.querySelectorAll('[role="button"], button')) {
+              const txt = (btn.textContent ?? '').trim();
+              if (DONE_LABELS.includes(txt)) { btn.click(); return `text=${txt}`; }
+            }
+            return null;
+          });
+          if (pickerClosed) {
+            console.log(`[publisher] post=${postId} Closed photo picker panel: ${pickerClosed}`);
+            await sleep(800);
+          }
         }
       }
 
@@ -484,15 +506,14 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       `len=${verify.textLen} img=${verify.hasImage}`
     );
 
-    // ── 6. Find and click Post button (mirrors extension STEP 4) ─────────
-    const POST_LABELS = ['פרסום', 'פרסם', 'Post', 'שתף', 'Share'];
+    // ── 6. Find and click Post button ────────────────────────────────────
+    const POST_LABELS = ['פרסום', 'פרסם', 'Post', 'שתף', 'Share', 'שלח', 'שלחי', 'בקש לפרסם'];
 
-    // 25 attempts × 800ms = 20s total. Facebook may keep the Post button
-    // aria-disabled while uploading photos / processing the post — give it time.
+    // 30 attempts × 600ms = 18s total.
+    // allowDisabled kicks in from attempt 20 so a stuck aria-disabled doesn't block us.
     let posted = false;
-    for (let attempt = 1; attempt <= 25; attempt++) {
-      // On the very last attempt, allow clicking aria-disabled buttons (defensive fallback)
-      const allowDisabled = attempt === 25;
+    for (let attempt = 1; attempt <= 30; attempt++) {
+      const allowDisabled = attempt >= 20;
       const result = await page.evaluate(({ labels, allowDisabled }) => {
         const dialog = document.querySelector('div[role="dialog"]');
         const root   = dialog ?? document;
@@ -532,54 +553,56 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
           }
         }
 
-        // S3: blue background button (Facebook's submit button is blue)
-        if (dialog) {
-          for (const el of dialog.querySelectorAll('[role="button"], button')) {
-            const r = el.getBoundingClientRect();
-            if (r.width < 40 || r.height < 20) continue;
-            try {
-              const bg = window.getComputedStyle(el).backgroundColor;
-              const m  = bg.match(/rgb[a]?\((\d+),\s*(\d+),\s*(\d+)/);
-              if (m) {
-                const [, r2, g, b] = m.map(Number);
-                if (b > 180 && b > r2 * 2 && enabled(el)) {
-                  el.scrollIntoView({ block: 'center', behavior: 'instant' });
-                  humanClick(el);
-                  return `S3 blue bg="${bg}"`;
-                }
+        // S3: blue background button
+        const s3root = dialog ?? root;
+        for (const el of s3root.querySelectorAll('[role="button"], button')) {
+          const r = el.getBoundingClientRect();
+          if (r.width < 40 || r.height < 20) continue;
+          try {
+            const bg = window.getComputedStyle(el).backgroundColor;
+            const m  = bg.match(/rgb[a]?\((\d+),\s*(\d+),\s*(\d+)/);
+            if (m) {
+              const [, r2, g, b] = m.map(Number);
+              if (b > 180 && b > r2 * 2 && enabled(el)) {
+                el.scrollIntoView({ block: 'center', behavior: 'instant' });
+                humanClick(el);
+                return `S3 blue bg="${bg}"`;
               }
-            } catch {}
-          }
+            }
+          } catch {}
         }
 
-        // S4: lowest button in dialog (Post button is always at the bottom; sort by bottom desc)
-        if (dialog) {
-          const cands = [...dialog.querySelectorAll('[role="button"]')]
-            .filter(el => {
-              const r = el.getBoundingClientRect();
-              return r.width >= 40 && r.height >= 24 && enabled(el);
-            })
-            .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
-          if (cands[0]) {
-            cands[0].scrollIntoView({ block: 'center', behavior: 'instant' });
-            humanClick(cands[0]);
-            return `S4 positional text="${(cands[0].textContent ?? '').trim().slice(0, 20)}"`;
-          }
+        // S4: lowest visible button in dialog or document (catch-all)
+        const s4root = dialog ?? root;
+        const cands = [...s4root.querySelectorAll('[role="button"]')]
+          .filter(el => {
+            const r = el.getBoundingClientRect();
+            return r.width >= 40 && r.height >= 24 && enabled(el);
+          })
+          .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
+        if (cands[0]) {
+          cands[0].scrollIntoView({ block: 'center', behavior: 'instant' });
+          humanClick(cands[0]);
+          return `S4 positional text="${(cands[0].textContent ?? '').trim().slice(0, 20)}"`;
         }
 
-        return null;
+        // Diagnostic: return all button labels so we can see what's in the dialog
+        const allBtns = [...(dialog ?? document).querySelectorAll('[role="button"], button')]
+          .map(el => el.getAttribute('aria-label') || el.textContent?.trim().slice(0, 20))
+          .filter(Boolean).slice(0, 10);
+        return `NONE found. Dialog buttons: ${JSON.stringify(allBtns)}`;
       }, { labels: POST_LABELS, allowDisabled });
 
-      if (result) {
+      if (result && !result.startsWith('NONE')) {
         posted = true;
         console.log(`[publisher] post=${postId} Post button clicked via: ${result}${allowDisabled ? ' (forced)' : ''}`);
         break;
       }
 
       if (attempt % 5 === 0) {
-        console.log(`[publisher] post=${postId} Post button not ready (attempt ${attempt}/25)`);
+        console.log(`[publisher] post=${postId} Post button not ready (attempt ${attempt}/30): ${result}`);
       }
-      await sleep(800);
+      await sleep(600);
     }
 
     if (!posted) throw new Error('Could not find the Post button');
