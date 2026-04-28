@@ -136,7 +136,19 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       await sleep(1500);
     }
 
-    if (!triggerResult) throw new Error('Could not find compose button in group');
+    if (!triggerResult) {
+      // Check if this is a restricted group (marketplace-only or no posting permission)
+      const restricted = await page.evaluate(() => {
+        const body = document.body.textContent ?? '';
+        const signals = [
+          'מכור משהו', 'Sell something', 'מה אתה מוכר', "What are you selling",
+          'הצטרף לקבוצה', 'Join group', 'בקש להצטרף', 'Ask to join',
+        ];
+        return signals.some(s => body.includes(s)) ? signals.find(s => body.includes(s)) : null;
+      });
+      if (restricted) throw new Error(`GROUP_RESTRICTED: ${restricted}`);
+      throw new Error('Could not find compose button in group');
+    }
     console.log(`[publisher] post=${postId} Compose trigger clicked via: ${triggerResult}`);
 
     // Wait for the composer dialog to open
@@ -509,10 +521,25 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     // ── 6. Find and click Post button ────────────────────────────────────
     const POST_LABELS = ['פרסום', 'פרסם', 'Post', 'שתף', 'Share', 'שלח', 'שלחי', 'בקש לפרסם'];
 
+    // Try Playwright-native click first — CDP routes through the browser as a real
+    // user gesture and is NOT blocked by Facebook's overlay pointer-event interception.
+    let posted = false;
+    for (const label of POST_LABELS) {
+      try {
+        const btn = page.locator(`div[role="dialog"] [aria-label="${label}"]`).first();
+        if (await btn.count() > 0) {
+          await btn.click({ timeout: 3000 });
+          posted = true;
+          console.log(`[publisher] post=${postId} Post button clicked via native CDP: aria-label="${label}"`);
+          break;
+        }
+      } catch {}
+    }
+
+    // Fallback: JS dispatch loop (handles disabled states and positional search)
     // 30 attempts × 600ms = 18s total.
     // allowDisabled kicks in from attempt 20 so a stuck aria-disabled doesn't block us.
-    let posted = false;
-    for (let attempt = 1; attempt <= 30; attempt++) {
+    for (let attempt = 1; !posted && attempt <= 30; attempt++) {
       const allowDisabled = attempt >= 20;
       const result = await page.evaluate(({ labels, allowDisabled }) => {
         const dialog = document.querySelector('div[role="dialog"]');

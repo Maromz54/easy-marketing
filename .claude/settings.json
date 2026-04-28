@@ -27,7 +27,8 @@
       "PowerShell(python --version 2>&1)",
       "PowerShell(pip install paramiko 2>&1)",
       "PowerShell(tail -3)",
-      "Read(//c/Program Files/PuTTY/**)"
+      "Read(//c/Program Files/PuTTY/**)",
+      "Bash(curl -s 'https://uusatwaahcgtsultmqhl.supabase.co/rest/v1/posts?status=eq.failed&select=id,error_message,created_at&order=created_at.desc&limit=5' -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1c2F0d2FhaGNndHN1bHRtcWhsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzY1MTkzMCwiZXhwIjoyMDg5MjI3OTMwfQ.hOuJkFzsa9PLjnoBpXjG8JPa3rvJIeWb1UNuq1DfGpI' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1c2F0d2FhaGNndHN1bHRtcWhsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzY1MTkzMCwiZXhwIjoyMDg5MjI3OTMwfQ.hOuJkFzsa9PLjnoBpXjG8JPa3rvJIeWb1UNuq1DfGpI')"
     ]
   }
 }

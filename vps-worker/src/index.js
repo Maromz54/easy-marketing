@@ -123,14 +123,20 @@ async function main() {
           process.exit(2);
         }
 
+        // Group doesn't allow posting — fail immediately, no retry (saves time)
+        if (lastError.includes('GROUP_RESTRICTED')) {
+          await markFailed(post.id, lastError);
+          console.log(`[worker] post=${post.id} group restricted — skipped permanently`);
+        }
         // Recoverable errors (TIMEOUT, selector not found, etc.) — retry with backoff
-        if (post.retry_count < MAX_RETRIES) {
+        else if (post.retry_count < MAX_RETRIES) {
           await rescheduleWithBackoff(post.id, post.retry_count, BASE_RETRY_DELAY_MS);
           console.log(`[worker] post=${post.id} rescheduled for retry ${post.retry_count + 1}`);
         } else {
           await markFailed(post.id, `Max retries (${MAX_RETRIES}) reached. Last error: ${lastError}`);
           console.error(`[worker] ✗ post=${post.id} permanently failed`);
         }
+
       }
 
       if (success) {
