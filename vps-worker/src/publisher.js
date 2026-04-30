@@ -169,6 +169,15 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     }
     if (!composerEl) throw new Error('Could not find composer editor in dialog');
 
+    // Mark the specific dialog that contains the composer with a unique attribute.
+    // This prevents all subsequent queries from accidentally targeting Facebook's
+    // notification panels or other concurrent dialogs that also use role="dialog".
+    await composerEl.evaluate(el => {
+      let node = el;
+      while (node && node.getAttribute?.('role') !== 'dialog') node = node.parentElement;
+      if (node) node.setAttribute('data-em-composer', 'true');
+    });
+
     // ── 4. Upload images FIRST (before text injection) ───────────────────
     // CRITICAL: Clicking the photo button resets the Lexical editor content.
     // By uploading images on the empty composer first, we avoid losing text.
@@ -191,7 +200,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
 
         // Check if a photo preview appeared inside the dialog
         const hasImagePreview = () => page.evaluate(() => {
-          const d = document.querySelector('div[role="dialog"]');
+          const d = document.querySelector('[data-em-composer="true"]');
           return !!(
             d?.querySelector('img[src^="blob:"]') ||
             d?.querySelector('[data-visualcompletion="media-vc-image"]') ||
@@ -215,7 +224,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
 
         // Diagnostic: log buttons available in dialog to help debug selector issues
         const dialogBtns = await page.evaluate(() => {
-          const dialog = document.querySelector('div[role="dialog"]');
+          const dialog = document.querySelector('[data-em-composer="true"]');
           return [...(dialog?.querySelectorAll('[role="button"]') ?? [])]
             .map(el => el.getAttribute('aria-label') || el.textContent?.trim().slice(0, 25))
             .filter(Boolean).slice(0, 15);
@@ -246,7 +255,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
               'Add photos/videos', 'הוסף תמונה', 'הוספת תמונות/סרטונים',
             ];
             const clickResult = await page.evaluate((labels) => {
-              const dialog = document.querySelector('div[role="dialog"]');
+              const dialog = document.querySelector('[data-em-composer="true"]');
               if (!dialog) return null;
               for (const label of labels) {
                 const el = dialog.querySelector(`[aria-label="${label}"]`);
@@ -335,7 +344,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
           // After image upload, Facebook sometimes leaves a photo-picker sub-panel open
           // that hides the Post button. Close it by clicking Done/Add/OK if present.
           const pickerClosed = await page.evaluate(() => {
-            const dialog = document.querySelector('div[role="dialog"]');
+            const dialog = document.querySelector('[data-em-composer="true"]');
             if (!dialog) return null;
             const DONE_LABELS = ['סיום', 'הוסף', 'הוספה', 'אישור', 'Done', 'Add', 'OK', 'בוצע'];
             for (const label of DONE_LABELS) {
@@ -502,7 +511,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
 
     // ── 5a. Pre-submit verification log ──────────────────────────────────
     const verify = await page.evaluate(() => {
-      const dialog = document.querySelector('div[role="dialog"]');
+      const dialog = document.querySelector('[data-em-composer="true"]');
       const editor = dialog?.querySelector('[contenteditable="true"]');
       return {
         paragraphs: editor?.querySelectorAll('p').length ?? 0,
@@ -517,6 +526,12 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       `[publisher] post=${postId} Pre-submit: p=${verify.paragraphs} ` +
       `len=${verify.textLen} img=${verify.hasImage}`
     );
+
+    // Guard: if composer is empty something went wrong (e.g. a wrong click reset the editor).
+    // Submitting an empty post would fail or publish garbage — abort instead.
+    if (verify.textLen === 0) {
+      throw new Error('Composer is empty before submit — text injection was lost');
+    }
 
     // ── 6. Find and click Post button ────────────────────────────────────
     const POST_LABELS = ['פרסום', 'פרסם', 'Post', 'שתף', 'Share', 'שלח', 'שלחי', 'בקש לפרסם'];
@@ -542,7 +557,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     for (let attempt = 1; !posted && attempt <= 30; attempt++) {
       const allowDisabled = attempt >= 20;
       const result = await page.evaluate(({ labels, allowDisabled }) => {
-        const dialog = document.querySelector('div[role="dialog"]');
+        const dialog = document.querySelector('[data-em-composer="true"]');
         const root   = dialog ?? document;
         const enabled = (el) => allowDisabled || el.getAttribute('aria-disabled') !== 'true';
 
@@ -641,7 +656,7 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
     while (!composerGone && Date.now() < deadline) {
       await sleep(500);
       composerGone = await page
-        .evaluate(() => !document.querySelector('div[role="dialog"]'))
+        .evaluate(() => !document.querySelector('[data-em-composer="true"]'))
         .catch(() => true);
     }
     if (!composerGone) {
