@@ -341,6 +341,15 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
         if (!imgStrategy) {
           console.warn(`[publisher] post=${postId} Image upload failed — continuing without images`);
         } else {
+          // Wait for Facebook to finish uploading files to its CDN.
+          // setInputFiles fires the change event and Facebook begins async CDN uploads.
+          // The blob: preview appears almost immediately, but the actual upload takes
+          // ~3s per image. If we click "Publish" before uploads finish, the handler
+          // silently ignores the click. 3s/image + 5s base, capped at 30s.
+          const cdnUploadWaitMs = Math.min(45_000, 5_000 + tmpFiles.length * 3_000);
+          console.log(`[publisher] post=${postId} Waiting ${Math.round(cdnUploadWaitMs/1000)}s for image CDN uploads...`);
+          await sleep(cdnUploadWaitMs);
+
           // After image upload, Facebook sometimes leaves a photo-picker sub-panel open
           // that hides the Post button. Close it by clicking Done/Add/OK if present.
           const pickerClosed = await page.evaluate(() => {
@@ -502,17 +511,32 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
         // Move caret to the very end of all content (Ctrl+End, not End — End only goes to end-of-line)
         await page.keyboard.press('Control+End');
         await page.keyboard.type(' ');
-        await sleep(3000);
-        console.log(`[publisher] post=${postId} Link preview hydration done`);
+
+        // Give Facebook 10s to fetch OG data and render the link preview card.
+        // Facebook blocks post submission until the preview finishes loading.
+        await sleep(10_000);
+        const hasPreview = await page.evaluate(() => {
+          const dialog = document.querySelector('[data-em-composer="true"]');
+          // Link preview typically renders as a role="link" or a dedicated preview block
+          return !!(dialog?.querySelector('[role="link"]') || dialog?.querySelector('[data-testid*="preview"]'));
+        });
+        console.log(`[publisher] post=${postId} Link preview hydration done (hasPreview=${hasPreview})`);
       } catch (e) {
         console.warn(`[publisher] post=${postId} Link preview error: ${e.message}`);
       }
     }
 
     // ── 5a. Pre-submit verification log ──────────────────────────────────
-    const verify = await page.evaluate(() => {
+    const POST_LABELS = ['פרסום', 'פרסם', 'Post', 'שתף', 'Share', 'שלח', 'שלחי', 'בקש לפרסם'];
+
+    const verify = await page.evaluate((labels) => {
       const dialog = document.querySelector('[data-em-composer="true"]');
       const editor = dialog?.querySelector('[contenteditable="true"]');
+      let btnLabel = null, btnDisabled = 'not-found';
+      for (const label of labels) {
+        const btn = dialog?.querySelector(`[aria-label="${label}"]`);
+        if (btn) { btnLabel = label; btnDisabled = btn.getAttribute('aria-disabled') ?? 'enabled'; break; }
+      }
       return {
         paragraphs: editor?.querySelectorAll('p').length ?? 0,
         textLen:    (editor?.textContent ?? '').length,
@@ -520,11 +544,14 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
           dialog?.querySelector('img[src^="blob:"]') ||
           dialog?.querySelector('[data-visualcompletion="media-vc-image"]')
         ),
+        btnLabel,
+        btnDisabled,
       };
-    });
+    }, POST_LABELS);
     console.log(
       `[publisher] post=${postId} Pre-submit: p=${verify.paragraphs} ` +
-      `len=${verify.textLen} img=${verify.hasImage}`
+      `len=${verify.textLen} img=${verify.hasImage} ` +
+      `btn="${verify.btnLabel}" disabled=${verify.btnDisabled}`
     );
 
     // Guard: if composer is empty something went wrong (e.g. a wrong click reset the editor).
@@ -533,27 +560,195 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
       throw new Error('Composer is empty before submit — text injection was lost');
     }
 
-    // ── 6. Find and click Post button ────────────────────────────────────
-    const POST_LABELS = ['פרסום', 'פרסם', 'Post', 'שתף', 'Share', 'שלח', 'שלחי', 'בקש לפרסם'];
+    // ── 6. Wait for Post button to become enabled, then click ─────────────
+    // The Post button stays aria-disabled="true" while images are uploading to
+    // Facebook's CDN. Even though blob: URLs appear immediately, the actual
+    // upload takes several more seconds. Clicking a disabled button does nothing.
 
-    // Try Playwright-native click first — CDP routes through the browser as a real
-    // user gesture and is NOT blocked by Facebook's overlay pointer-event interception.
-    let posted = false;
-    for (const label of POST_LABELS) {
-      try {
-        const btn = page.locator(`div[role="dialog"] [aria-label="${label}"]`).first();
-        if (await btn.count() > 0) {
-          await btn.click({ timeout: 3000 });
-          posted = true;
-          console.log(`[publisher] post=${postId} Post button clicked via native CDP: aria-label="${label}"`);
-          break;
+    const btnEnabledDeadline = Date.now() + 45_000; // wait up to 45s for upload to finish
+    let btnReadyLabel = null;
+    while (Date.now() < btnEnabledDeadline) {
+      const btnState = await page.evaluate((labels) => {
+        const dialog = document.querySelector('[data-em-composer="true"]');
+        for (const label of labels) {
+          const btn = dialog?.querySelector(`[aria-label="${label}"]`);
+          if (btn) return { label, disabled: btn.getAttribute('aria-disabled') };
         }
-      } catch {}
+        return null;
+      }, POST_LABELS);
+
+      if (btnState && btnState.disabled !== 'true') {
+        btnReadyLabel = btnState.label;
+        console.log(`[publisher] post=${postId} Post button "${btnReadyLabel}" is enabled`);
+        break;
+      }
+      if (btnState?.disabled === 'true') {
+        // log every 5s
+        if ((btnEnabledDeadline - Date.now()) % 5000 < 600) {
+          console.log(`[publisher] post=${postId} Waiting for Post button to enable (disabled=${btnState.disabled})...`);
+        }
+      }
+      await sleep(500);
+    }
+    if (!btnReadyLabel) {
+      console.warn(`[publisher] post=${postId} Post button never became enabled within 45s — attempting click anyway`);
     }
 
-    // Fallback: JS dispatch loop (handles disabled states and positional search)
-    // 30 attempts × 600ms = 18s total.
-    // allowDisabled kicks in from attempt 20 so a stuck aria-disabled doesn't block us.
+    // Monitor network requests and responses to diagnose what happens after clicking Post.
+    let _postNetworkLog = [];
+    let _graphqlResponse = null;
+    const _reqListener = req => {
+      if (req.method() === 'POST' && req.url().includes('facebook.com')) {
+        const path = req.url().replace(/https?:\/\/[^/]+/, '').split('?')[0];
+        _postNetworkLog.push(path.slice(0, 70));
+      }
+    };
+    const _respListener = async (resp) => {
+      if (resp.request().method() === 'POST' && resp.url().includes('/graphql')) {
+        try {
+          const body = await resp.text().catch(() => '');
+          _graphqlResponse = `status=${resp.status()} body=${body.slice(0, 200)}`;
+        } catch {}
+      }
+    };
+    page.on('request', _reqListener);
+    page.on('response', _respListener);
+
+    let posted = false;
+
+    // Method A: React internal props — accesses Facebook's compiled onClick directly.
+    // Bypasses DOM event dispatch, isTrusted checks, and React's synthetic event layer.
+    // Works when btn.click() and page.mouse.click() are silently ignored.
+    try {
+      const reactResult = await page.evaluate((labels) => {
+        const dialog = document.querySelector('[data-em-composer="true"]');
+        for (const label of labels) {
+          const btn = dialog?.querySelector(`[aria-label="${label}"]`);
+          if (!btn || btn.getAttribute('aria-disabled') === 'true') continue;
+          btn.scrollIntoView({ block: 'center' });
+
+          // React 17+ stores event handlers on __reactProps$<hash>
+          const reactKey = Object.keys(btn).find(k => k.startsWith('__reactProps'));
+          if (reactKey && typeof btn[reactKey]?.onClick === 'function') {
+            const synth = {
+              type: 'click', target: btn, currentTarget: btn,
+              bubbles: true, cancelable: true, isTrusted: true,
+              defaultPrevented: false, timeStamp: Date.now(),
+              preventDefault: () => {}, stopPropagation: () => {},
+              stopImmediatePropagation: () => {},
+              nativeEvent: {
+                isTrusted: true, type: 'click', target: btn,
+                preventDefault: () => {}, stopPropagation: () => {},
+              },
+            };
+            btn[reactKey].onClick(synth);
+            return 'reactProps:' + label;
+          }
+
+          // React fiber walk for older React versions
+          const fiberKey = Object.keys(btn).find(k => k.startsWith('__reactFiber'));
+          if (fiberKey) {
+            let fiber = btn[fiberKey];
+            for (let d = 0; d < 8 && fiber; d++, fiber = fiber.return) {
+              if (typeof fiber.pendingProps?.onClick === 'function') {
+                fiber.pendingProps.onClick({
+                  type: 'click', target: btn, currentTarget: btn,
+                  bubbles: true, cancelable: true, isTrusted: true,
+                  preventDefault: () => {}, stopPropagation: () => {},
+                  nativeEvent: { isTrusted: true, type: 'click' },
+                });
+                return 'reactFiber:' + label;
+              }
+            }
+          }
+          return 'noReactHandler:' + label;
+        }
+        return 'not-found';
+      }, POST_LABELS);
+
+      if (reactResult && !reactResult.startsWith('not-found') && !reactResult.startsWith('noReact')) {
+        posted = true;
+        console.log(`[publisher] post=${postId} Post via ${reactResult}`);
+      } else {
+        console.warn(`[publisher] post=${postId} Method A (React props): ${reactResult}`);
+      }
+    } catch (e) {
+      console.warn(`[publisher] post=${postId} Method A (React props) failed: ${e.message}`);
+    }
+
+    // Method B: CDP Runtime.evaluate with userGesture:true
+    // Provides transient user activation context; btn.click() fires inside that context.
+    if (!posted) {
+      try {
+        const cdpSession = await page.context().newCDPSession(page);
+        const labelsJson = JSON.stringify(POST_LABELS);
+        const cdpResult = await cdpSession.send('Runtime.evaluate', {
+          expression: `
+            (function() {
+              const labels = ${labelsJson};
+              for (const label of labels) {
+                const btn = document.querySelector('[data-em-composer="true"] [aria-label="' + label + '"]') ||
+                            document.querySelector('[role="dialog"] [aria-label="' + label + '"]');
+                if (btn && btn.getAttribute('aria-disabled') !== 'true') {
+                  btn.scrollIntoView({ block: 'center' });
+                  btn.click();
+                  return 'clicked:' + label;
+                }
+              }
+              return 'not-found';
+            })()
+          `,
+          userGesture: true,
+          awaitPromise: false,
+        });
+        await cdpSession.detach();
+        const clickedLabel = cdpResult?.result?.value;
+        if (clickedLabel && !clickedLabel.startsWith('not-found')) {
+          posted = true;
+          console.log(`[publisher] post=${postId} Post via CDP userGesture: ${clickedLabel}`);
+        } else {
+          console.warn(`[publisher] post=${postId} Method B (CDP userGesture): ${clickedLabel}`);
+        }
+      } catch (e) {
+        console.warn(`[publisher] post=${postId} Method B (CDP userGesture) failed: ${e.message}`);
+      }
+    }
+
+    // Method C: Playwright mouse click (trusted CDP Input.dispatchMouseEvent)
+    if (!posted) {
+      try {
+        const btnLoc = page.locator(`[data-em-composer="true"] [aria-label="${btnReadyLabel || POST_LABELS[0]}"]`).first();
+        const box = await btnLoc.boundingBox();
+        if (box) {
+          const cx = box.x + box.width / 2;
+          const cy = box.y + box.height / 2;
+          await page.mouse.move(cx, cy, { steps: 10 });
+          await sleep(100);
+          await page.mouse.click(cx, cy);
+          posted = true;
+          console.log(`[publisher] post=${postId} Post via mouse.click at (${Math.round(cx)},${Math.round(cy)})`);
+        }
+      } catch (e) {
+        console.warn(`[publisher] post=${postId} Method C (mouse.click) failed: ${e.message}`);
+      }
+    }
+
+    // Method D: locator.click()
+    if (!posted) {
+      for (const label of POST_LABELS) {
+        try {
+          const btn = page.locator(`[data-em-composer="true"] [aria-label="${label}"]`).first();
+          if (await btn.count() > 0) {
+            await btn.click({ timeout: 3000 });
+            posted = true;
+            console.log(`[publisher] post=${postId} Post via locator.click: "${label}"`);
+            break;
+          }
+        } catch {}
+      }
+    }
+
+    // Method E: JS humanClick loop with positional fallback (30 attempts × 600ms = 18s)
     for (let attempt = 1; !posted && attempt <= 30; attempt++) {
       const allowDisabled = attempt >= 20;
       const result = await page.evaluate(({ labels, allowDisabled }) => {
@@ -572,94 +767,105 @@ export async function postToGroup(postId, groupId, content, imageUrls = [], link
           el.dispatchEvent(new MouseEvent('click',      opts));
         }
 
-        // S1: exact aria-label
         for (const label of labels) {
           const el = root.querySelector(`[aria-label="${label}"][role="button"]`) ||
                      root.querySelector(`button[aria-label="${label}"]`) ||
                      root.querySelector(`[aria-label="${label}"]`);
-          if (el && enabled(el)) {
-            el.scrollIntoView({ block: 'center', behavior: 'instant' });
-            humanClick(el);
-            return `S1 aria-label="${label}"`;
-          }
+          if (el && enabled(el)) { el.scrollIntoView({ block: 'center', behavior: 'instant' }); humanClick(el); return `E1:"${label}"`; }
         }
-
-        // S2: text content match
         const lower = labels.map(l => l.toLowerCase());
         for (const el of root.querySelectorAll('[role="button"], button')) {
           const txt = (el.textContent ?? '').trim().toLowerCase();
-          if (lower.includes(txt) && enabled(el)) {
-            el.scrollIntoView({ block: 'center', behavior: 'instant' });
-            humanClick(el);
-            return `S2 text="${txt}"`;
-          }
+          if (lower.includes(txt) && enabled(el)) { el.scrollIntoView({ block: 'center', behavior: 'instant' }); humanClick(el); return `E2:"${txt}"`; }
         }
-
-        // S3: blue background button
-        const s3root = dialog ?? root;
-        for (const el of s3root.querySelectorAll('[role="button"], button')) {
-          const r = el.getBoundingClientRect();
-          if (r.width < 40 || r.height < 20) continue;
-          try {
-            const bg = window.getComputedStyle(el).backgroundColor;
-            const m  = bg.match(/rgb[a]?\((\d+),\s*(\d+),\s*(\d+)/);
-            if (m) {
-              const [, r2, g, b] = m.map(Number);
-              if (b > 180 && b > r2 * 2 && enabled(el)) {
-                el.scrollIntoView({ block: 'center', behavior: 'instant' });
-                humanClick(el);
-                return `S3 blue bg="${bg}"`;
-              }
-            }
-          } catch {}
-        }
-
-        // S4: lowest visible button in dialog or document (catch-all)
-        const s4root = dialog ?? root;
-        const cands = [...s4root.querySelectorAll('[role="button"]')]
-          .filter(el => {
-            const r = el.getBoundingClientRect();
-            return r.width >= 40 && r.height >= 24 && enabled(el);
-          })
+        const cands = [...(dialog ?? root).querySelectorAll('[role="button"]')]
+          .filter(el => { const r = el.getBoundingClientRect(); return r.width >= 40 && r.height >= 24 && enabled(el); })
           .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
-        if (cands[0]) {
-          cands[0].scrollIntoView({ block: 'center', behavior: 'instant' });
-          humanClick(cands[0]);
-          return `S4 positional text="${(cands[0].textContent ?? '').trim().slice(0, 20)}"`;
-        }
-
-        // Diagnostic: return all button labels so we can see what's in the dialog
-        const allBtns = [...(dialog ?? document).querySelectorAll('[role="button"], button')]
-          .map(el => el.getAttribute('aria-label') || el.textContent?.trim().slice(0, 20))
-          .filter(Boolean).slice(0, 10);
-        return `NONE found. Dialog buttons: ${JSON.stringify(allBtns)}`;
+        if (cands[0]) { cands[0].scrollIntoView({ block: 'center', behavior: 'instant' }); humanClick(cands[0]); return `E3:"${(cands[0].textContent ?? '').trim().slice(0, 20)}"`; }
+        return `NONE`;
       }, { labels: POST_LABELS, allowDisabled });
 
       if (result && !result.startsWith('NONE')) {
         posted = true;
-        console.log(`[publisher] post=${postId} Post button clicked via: ${result}${allowDisabled ? ' (forced)' : ''}`);
+        console.log(`[publisher] post=${postId} Post via: ${result}${allowDisabled ? ' (forced)' : ''}`);
         break;
       }
-
-      if (attempt % 5 === 0) {
-        console.log(`[publisher] post=${postId} Post button not ready (attempt ${attempt}/30): ${result}`);
-      }
+      if (attempt % 5 === 0) console.log(`[publisher] post=${postId} Post button not ready (${attempt}/30): ${result}`);
       await sleep(600);
     }
 
     if (!posted) throw new Error('Could not find the Post button');
 
-    // ── 7. Wait for dialog to close (success indicator) ───────────────────
-    console.log(`[publisher] post=${postId} Waiting for composer to close...`);
-    const deadline = Date.now() + 20_000;
-    let composerGone = false;
-    while (!composerGone && Date.now() < deadline) {
+    // Report network activity and take immediate post-click snapshot
+    await sleep(2000);
+    page.off('request', _reqListener);
+    page.off('response', _respListener);
+    console.log(`[publisher] post=${postId} POST reqs after click: ${JSON.stringify(_postNetworkLog)}`);
+    if (_graphqlResponse) console.log(`[publisher] post=${postId} GraphQL response: ${_graphqlResponse}`);
+    try {
+      const snapPath = `${ERRORS_DIR}/post-${postId}-after-click.png`;
+      await page.screenshot({ path: snapPath });
+      console.log(`[publisher] post=${postId} Post-click snapshot: ${snapPath}`);
+    } catch {}
+
+    // ── 7. Wait for dialog to close OR a success signal ──────────────────
+    const deadline = Date.now() + 43_000; // 45s total (2s already elapsed above)
+    let successSignal = null;
+    while (!successSignal && Date.now() < deadline) {
       await sleep(500);
-      composerGone = await page
-        .evaluate(() => !document.querySelector('[data-em-composer="true"]'))
-        .catch(() => true);
+      successSignal = await page.evaluate(() => {
+        // Case 1: dialog removed from DOM
+        const dialog = document.querySelector('[data-em-composer="true"]');
+        if (!dialog) return 'dialog-closed';
+
+        // Case 2: composer text cleared — post submitted (may be pending admin review)
+        const editor = dialog.querySelector('[contenteditable="true"]');
+        const editorText = (editor?.textContent ?? '').trim();
+        if (editor && editorText.length === 0) return 'text-cleared';
+
+        // Case 3: success/pending keywords visible in dialog body
+        const dialogText = dialog.textContent ?? '';
+        const PENDING_SIGNALS = [
+          'ממתין', 'pending', 'review', 'נשלח', 'אישור ניהול',
+          'הפוסט שלך', 'submitted', 'בדיקה', 'הפוסט נשמר',
+          'הפוסט ממתין', 'בהמתנה', 'אישור',
+        ];
+        const hit = PENDING_SIGNALS.find(s => dialogText.includes(s));
+        if (hit) return `pending-msg:${hit}`;
+
+        // Case 4: A second dialog appeared after clicking Post (confirmation step).
+        // Click its Post/Continue button if found.
+        for (const otherDlg of document.querySelectorAll('[role="dialog"]')) {
+          if (otherDlg.hasAttribute('data-em-composer')) continue;
+          const CONFIRM_LBLS = ['פרסום', 'פרסם', 'Post', 'שתף', 'שלח', 'אישור', 'המשך', 'Continue', 'בקש לפרסם'];
+          for (const lbl of CONFIRM_LBLS) {
+            const b = otherDlg.querySelector(`[aria-label="${lbl}"]`);
+            if (b && b.getAttribute('aria-disabled') !== 'true') { b.click(); return 'secondary-dlg:' + lbl; }
+          }
+          for (const b of otherDlg.querySelectorAll('[role="button"]')) {
+            const txt = (b.textContent ?? '').trim();
+            if (CONFIRM_LBLS.includes(txt) && b.getAttribute('aria-disabled') !== 'true') { b.click(); return 'secondary-dlg-txt:' + txt; }
+          }
+        }
+
+        return null;
+      }).catch(() => 'dialog-closed');
     }
-    if (!composerGone) {
+
+    if (successSignal) {
+      console.log(`[publisher] post=${postId} Post submitted (signal: ${successSignal})`);
+      // If we clicked a secondary dialog, wait a bit for it to fully close
+      if (successSignal.startsWith('secondary-dlg')) {
+        await sleep(5000);
+      }
+    } else {
+      const dialogSnapshot = await page.evaluate(() => {
+        const d = document.querySelector('[data-em-composer="true"]');
+        if (!d) return 'dialog gone';
+        const editor = d.querySelector('[contenteditable="true"]');
+        return `textLen=${(editor?.textContent ?? '').length} html=${d.innerHTML.slice(0, 400)}`;
+      }).catch(() => 'eval failed');
+      console.error(`[publisher] post=${postId} Dialog still open. Snapshot: ${dialogSnapshot}`);
       throw new Error('Composer still open after Post click — publish may have failed');
     }
 
